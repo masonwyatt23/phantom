@@ -429,3 +429,16 @@ require the host launcher's source and its sandbox review: emit readiness only
 after worktree preparation and an observed first model token, with the model
 endpoint restricted to loopback. A health GET alone is not readiness evidence.
 No production launch-to-ready or post-merge waste result is available locally.
+
+# Must split before publication
+
+All dispatcher pools (including codex-bridge), the staged drainer and local router
+publication block above +800 net lines; exactly +800 passes. Split into jobs of
+at most +800 net or put `bet=bold` in queue metadata, never prose. Unknown diffs
+block. Counts include commits and untracked files via a temporary index; binary
+files have no line count. Previously bold only affected restock preference.
+The external security-pinned publisher is absent here. Before pushing/opening,
+after stopping writers, integrate this check through security review/re-pinning:
+`python3 "$PHANTOM_ROOT/contrib/mac/must_split.py" "$WT" "$BASE" "$R/$J.job-line" || exit 1`.
+Deploy the helper beside dispatchd. Direct publisher calls remain uncovered
+until integration; preserve fork-only pushes and auto-merge. No host was changed.

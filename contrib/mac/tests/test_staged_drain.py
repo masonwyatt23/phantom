@@ -130,12 +130,15 @@ class GateTests(unittest.TestCase):
         tmp = build(tsv='JOB-A\tlocus\t/nonexistent\tabc1234\tstaged\tsrc/a.ts\n',
                     counts=[10, 10, 10, 10, 9])
         with tmp:
+            wt, base = mk_wt(tmp.name, 'publish', {'src/a.ts': 'small change\n'})
+            path = Path(tmp.name) / 'work' / 'staged-pushes.tsv'
+            path.write_text(path.read_text().replace('/nonexistent\tabc1234', wt + '\t' + base))
             r = tick(Path(tmp.name))
             self.assertEqual(r.returncode, 0, r.stderr)
             self.assertIn('drain=proceed', r.stdout)
             self.assertIn('queued=49', r.stdout)
             self.assertEqual(publish_calls(tmp.name), ['JOB-A'])
-            self.assertIn('JOB-A\tlocus\t/nonexistent\tabc1234\tdone', tsv(tmp.name))
+            self.assertIn(f'JOB-A\tlocus\t{wt}\t{base}\tdone', tsv(tmp.name))
 
     def test_50_holds(self):
         src = 'JOB-A\tlocus\t/nonexistent\tabc1234\tstaged\tsrc/a.ts\n'
@@ -226,12 +229,25 @@ class DryRunTests(unittest.TestCase):
 
 
 class DrainTests(unittest.TestCase):
+    def test_oversized_job_never_calls_publisher(self):
+        with build(counts=LOW) as home:
+            wt, base = mk_wt(home, 'large', {'new.txt': 'line\n' * 801})
+            (Path(home) / 'work/staged-pushes.tsv').write_text(
+                f'JOB-A\tlocus\t{wt}\t{base}\tstaged\tnew.txt\n')
+            result = tick(home)
+            self.assertEqual(publish_calls(home), [])
+            self.assertIn('must-split:', result.stdout)
+            self.assertIn('bet=bold', result.stdout)
+
     def test_parked_skipped_publish_in_order_done_marked(self):
         tmp = build(tsv='JOB-PARK\tlocus\t/nonexistent\tabc1234\tPARKED\tsrc/p.ts\n'
                         'JOB-A\tlocus\t/nonexistent\tabc1234\tstaged\tsrc/a.ts\n'
                         'JOB-B\tlexicon\t/nonexistent\tabc1234\tstaged\tsrc/b.ts\n',
                     counts=LOW)
         with tmp:
+            wt, base = mk_wt(tmp.name, 'publish', {'src/a.ts': 'small change\n'})
+            path = Path(tmp.name) / 'work' / 'staged-pushes.tsv'
+            path.write_text(path.read_text().replace('/nonexistent\tabc1234', wt + '\t' + base))
             r = tick(Path(tmp.name))
             self.assertEqual(r.returncode, 0, r.stderr)
             self.assertEqual(publish_calls(tmp.name), ['JOB-A', 'JOB-B'])
@@ -240,9 +256,9 @@ class DrainTests(unittest.TestCase):
             self.assertIn('job=JOB-A outcome=done route=publish', rows[1])
             self.assertIn('job=JOB-B outcome=done route=publish', rows[2])
             out = tsv(tmp.name)
-            self.assertIn('JOB-PARK\tlocus\t/nonexistent\tabc1234\tPARKED\tsrc/p.ts\n', out)
-            self.assertIn('JOB-A\tlocus\t/nonexistent\tabc1234\tdone\tsrc/a.ts\troute=publish', out)
-            self.assertIn('JOB-B\tlexicon\t/nonexistent\tabc1234\tdone\tsrc/b.ts\troute=publish', out)
+            self.assertIn(f'JOB-PARK\tlocus\t{wt}\t{base}\tPARKED\tsrc/p.ts\n', out)
+            self.assertIn(f'JOB-A\tlocus\t{wt}\t{base}\tdone\tsrc/a.ts\troute=publish', out)
+            self.assertIn(f'JOB-B\tlexicon\t{wt}\t{base}\tdone\tsrc/b.ts\troute=publish', out)
             self.assertIn('done=2 failed=0 skipped=1', r.stdout)
 
     def test_handoff_creates_branch_and_diff_without_push(self):
@@ -290,15 +306,18 @@ class DrainTests(unittest.TestCase):
                         'JOB-B\tlocus\t/nonexistent\tabc1234\tstaged\tsrc/b.ts\n',
                     counts=LOW, publish_fail=('JOB-A',))
         with tmp:
+            wt, base = mk_wt(tmp.name, 'publish', {'src/a.ts': 'small change\n'})
+            path = Path(tmp.name) / 'work' / 'staged-pushes.tsv'
+            path.write_text(path.read_text().replace('/nonexistent\tabc1234', wt + '\t' + base))
             r = tick(Path(tmp.name))
             self.assertEqual(r.returncode, 0, r.stderr)
             self.assertEqual(publish_calls(tmp.name), ['JOB-A', 'JOB-B'])
             self.assertIn('job=JOB-A outcome=failed route=publish reason=publish-exit-7', r.stdout)
             self.assertIn('job=JOB-B outcome=done route=publish', r.stdout)
             out = tsv(tmp.name)
-            self.assertIn('JOB-A\tlocus\t/nonexistent\tabc1234\tfailed\tsrc/a.ts\t'
+            self.assertIn(f'JOB-A\tlocus\t{wt}\t{base}\tfailed\tsrc/a.ts\t'
                           'route=publish;reason=publish-exit-7', out)
-            self.assertIn('JOB-B\tlocus\t/nonexistent\tabc1234\tdone', out)
+            self.assertIn(f'JOB-B\tlocus\t{wt}\t{base}\tdone', out)
             self.assertIn('done=1 failed=1 skipped=0', r.stdout)
 
     def test_invalid_rows_fail_closed(self):

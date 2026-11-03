@@ -107,3 +107,9 @@ Tier-1 import closure checks on every PR and merge queue candidate, including
 docs-only changes. A new Tier-1 test needs its generated CODEOWNERS entry in the
 same PR; changed Tier-1 imports need a reviewed closure snapshot update. Drift
 fails the existing Merge Gate even when the full authority shards do not run.
+
+Must split: before publication, every pool including codex-bridge must block jobs
+above +800 net lines unless queue metadata includes `bet=bold`. Split into jobs
+of at most +800 or tag the queue metadata; see
+[publication guard](contrib/mac/README.md#must-split-before-publication), including
+the required security-pinned external publisher integration.

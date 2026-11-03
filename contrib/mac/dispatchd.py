@@ -8,6 +8,7 @@
 # RQ-LANERECOVERNOV1Q8 rev: repeated authentication failures (>=2 distinct failed/EMPTY finishes with a
 # provider auth-error line) hold the lane autobackoff-style; no credential store is ever written.
 import os, re, json, time, fcntl, subprocess, glob
+from must_split import check as must_split_check
 H = os.path.expanduser("~"); R = H + "/.ashlr-runs"; Q = R + "/queue"; RUN = Q + "/run"
 WTROOT = H + "/Projects/ashlrai/wt"; EV = R + "/dispatch-events.log"
 NOW = time.time(); TS = time.strftime("%F %T")
@@ -518,6 +519,11 @@ for bp in sorted(glob.glob(R + "/*.base"), key=_prio):
     if DRIP:
         if drip_budget <= 0: continue
         drip_budget -= 1; open(DRIPLOG, "a").write("%f\n" % NOW)
+    split_error = must_split_check(wt, b[0], rd("%s/%s.job-line" % (R, j)))
+    if split_error:
+        ev("BLOCKED %s %s" % (j, split_error))
+        kept.append(j)
+        continue
     os.mkdir(RUN + "/" + j + ".reaping"); nreap += 1
     try:
         lp = "%s/%s.log" % (R, j); tl = logtail(lp, 20000)

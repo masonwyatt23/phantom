@@ -13,6 +13,7 @@
 # only. Each processed row is marked done or failed in place; terminal rows are never
 # reprocessed. The drain itself never runs git push, fetch, pull or any remote command.
 import os, re, sys, time, fcntl, subprocess, tempfile
+from must_split import check as must_split_check
 
 WORK = os.environ.get("STAGED_DRAIN_WORK", "/workspace/phantom-work")
 TSV = os.path.join(WORK, "staged-pushes.tsv")
@@ -174,6 +175,12 @@ def publish(row):
     """Invoke the pinned publisher with the job id only; its output is never printed."""
     if (os.path.islink(PUBLISH) or not os.path.isfile(PUBLISH)
             or not os.access(PUBLISH, os.X_OK)): return "publisher-unavailable"
+    line_path = os.path.join(os.path.dirname(os.path.dirname(PUBLISH)), row["job"] + ".job-line")
+    try:
+        with open(line_path) as source: line = source.read()
+    except OSError: line = ""
+    error = must_split_check(row["worktree"], row["base"], line)
+    if error: return error
     try:
         r = subprocess.run([PUBLISH, row["job"]], capture_output=True, text=True,
                            timeout=PUBLISH_TIMEOUT, env=base_env())

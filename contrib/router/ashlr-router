@@ -1919,7 +1919,7 @@ EOF
   fi
   subject=$(printf '%s' "$title" | tr '\n\r' '  ' | cut -c 1-80)
   set +e
-  router_commit_and_push "$ROUTER_WT" "$repo" "$ROUTER_BRANCH" "$ROUTER_BASE" "$cli" "$subject" "$number" "$cur_tier" "$verify_rc" "$warning"
+  router_commit_and_push "$ROUTER_WT" "$repo" "$ROUTER_BRANCH" "$ROUTER_BASE" "$cli" "$subject" "$number" "$cur_tier" "$verify_rc" "$warning" "$body_file"
   rc_pr=$?
   set -e
   if [[ "$rc_pr" -eq 2 ]]; then
@@ -2045,6 +2045,13 @@ router_commit_and_push() {
     if [[ "$made" -eq 1 ]]; then
       git -C "$wt" reset -q --mixed HEAD~1 || true
     fi
+    return 1
+  fi
+  local split_helper="$ROUTER_LIB/must_split.py"
+  [[ -f "$split_helper" ]] || split_helper="$ROUTER_LIB/../../mac/must_split.py"
+  if ! python3 "$split_helper" "$wt" "$base_sha" \
+      "${11:-/dev/null}"; then
+    router_log "must-split refused publication; split into <=800 net jobs or set bet=bold in job metadata"
     return 1
   fi
   checked=$(git -C "$wt" rev-parse HEAD)
