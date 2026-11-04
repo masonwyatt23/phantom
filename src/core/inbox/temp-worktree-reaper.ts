@@ -52,7 +52,7 @@ import {
   releaseOutwardMutationFence,
 } from '../sandbox/mutation-fence.js';
 import { killSwitchOn } from '../sandbox/policy.js';
-import { filterDriverOverrides, repoScopedFilterDrivers, withDaemonGitHardening } from '../sandbox/worktree.js';
+import { filterDriverOverrides, repoScopedFilterDrivers, withDaemonGitHardening } from '../sandbox/git-hardening.js';
 import { isKeptWorktree, measureWorktreeBytes, readKeptWorktrees } from '../worktree-retention.js';
 import {
   verifiedProcessStartIdentity,

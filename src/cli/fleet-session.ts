@@ -2,6 +2,7 @@ import { isAbsolute } from 'node:path';
 import { followFleetSession } from '../core/fleet/session.js';
 
 export async function cmdFleetSession(args: string[]): Promise<number> {
+  if (args.includes('--help') || args.includes('-h')) return usage(0);
   const [job, ...rest] = args;
   let queueDir: string | undefined;
   for (let i = 0; i < rest.length; i++) {
@@ -26,7 +27,7 @@ export async function cmdFleetSession(args: string[]): Promise<number> {
     process.off('SIGTERM', stop);
   }
 }
-function usage(): number {
+function usage(code = 2): number {
   process.stderr.write('usage: phantom fleet session <job> --json [--follow] [--queue-dir <abs>]\n');
-  return 2;
+  return code;
 }

@@ -22,6 +22,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
 
 // ---------------------------------------------------------------------------
 // Hermetic HOME — redirect all home-relative paths to a tmp dir
@@ -45,15 +47,28 @@ afterEach(() => {
 // Mock child_process — capture all spawn/execFile calls for NO_AUTO_PULL
 // ---------------------------------------------------------------------------
 
-const mockExecFile = vi.fn();
+// Settle unavailable executable probes like the real API; a bare vi.fn()
+// leaves promisified doctor probes pending forever.
+const mockExecFile = vi.fn((...args: unknown[]) => {
+  const callback = args.at(-1);
+  if (typeof callback === 'function') callback(new Error('fixture: executable unavailable'), '', '');
+  return {};
+});
 const mockExecFileSync = vi.fn();
 const mockSpawnSync = vi.fn(() => ({ status: 1, stdout: '', stderr: '' }));
-const mockSpawn = vi.fn(() => ({
-  stdout: { on: vi.fn() },
-  stderr: { on: vi.fn() },
-  on: vi.fn(),
-  pid: 12345,
-}));
+const mockSpawn = vi.fn(() => {
+  const child = Object.assign(new EventEmitter(), {
+    stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(),
+    pid: undefined, kill: vi.fn(() => true), unref: vi.fn(),
+  });
+  // Real subprocess probes always settle. A child that never emits close
+  // tests a hung process instead of unavailable executables.
+  queueMicrotask(() => {
+    child.stdout.end(); child.stderr.end();
+    child.emit('exit', 1); child.emit('close', 1);
+  });
+  return child;
+});
 
 vi.mock('node:child_process', () => ({
   execFile: (...args: unknown[]) => mockExecFile(...args),
@@ -122,12 +137,10 @@ function allSpawnedArgs(): string[] {
 // Import under test (AFTER mocks are in place)
 // ---------------------------------------------------------------------------
 
-// Lazy import to pick up mocked modules
-async function importOnboard() {
-  // Clear module cache so HOME env change is picked up by config.ts
-  const mod = await import('../src/core/onboard.js');
-  return mod.onboard;
-}
+// Vitest hoists mocks before this import. Transforming the full module graph
+// belongs to collection, not the first test's five-second behavior deadline.
+import { onboard } from '../src/core/onboard.js';
+async function importOnboard() { return onboard; }
 
 // ---------------------------------------------------------------------------
 // Basic shape + NON-TTY-safe

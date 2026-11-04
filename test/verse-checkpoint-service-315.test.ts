@@ -430,7 +430,12 @@ describe('engine gate', () => {
     expect(engine.cancelTurn(session.id)).toBe(true);
     release();
     const events = await done;
-    expect(events.map((e) => e.type)).toEqual(['user-message', 'cancelled', 'turn-done']);
+    expect(events.map((e) => e.type)).toEqual([
+      'user-message', 'assistant-status', 'cancelled', 'assistant-status', 'turn-done',
+    ]);
+    expect(events[1]).toMatchObject({ type: 'assistant-status', phase: 'acknowledgement' });
+    expect(events[3]).toMatchObject({ type: 'assistant-status', phase: 'result' });
+    expect(events[4]).toMatchObject({ type: 'turn-done', ok: false });
     expect(existsSync(join(repo, 'agent-wrote.txt'))).toBe(false);
     expect(engine.getSession(session.id)?.status).toBe('idle');
   });

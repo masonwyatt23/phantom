@@ -2672,7 +2672,7 @@ the standalone resource-pool CLI.
 
 Phantom runs coding tasks on Z.ai models through a lane mapped to queue
 tiers. The lane exposes two models, glm-5.3 (work) and glm-5.3-flash
-(fast). See [Z.ai GLM Coding Lite lane](lanes/zai.md) for models, credit
+(fast). See [Z.ai GLM Coding Lite lane](https://github.com/ashlrai/phantom/blob/master/docs/lanes/zai.md) for models, credit
 formula, included allowance, rolling-window pacing, error classes, and test
 fixtures.
 

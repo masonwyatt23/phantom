@@ -4,11 +4,12 @@
  * The plan spends the remaining quota by the reset. A tick may spend only
  * the first period, and only up to the safety hold that is still in force
  * now. Unused allowance stays in the remainder and is replanned next cycle.
+ * Advisory only: quota eligibility, freshness and dispatch remain caller gates.
  * The hold shrinks to zero over the last buffer window, which is also when
  * the Grok Ultra orchestration reserve is released.
  */
 
-import type { MilpSolver } from './types.js';
+import type { PaceSolver } from './types.js';
 
 export interface HorizonKnobs {
   bufferFraction: number;
@@ -76,8 +77,9 @@ export interface HorizonPlan extends PacePlan {
 
 /** Fraction held back. Full until the window, then linear to 0 at reset. */
 export function safetyBuffer(timeLeftMs: number, fraction: number, windowMs: number): number {
+  if (!Number.isFinite(timeLeftMs) || !Number.isFinite(fraction) || fraction < 0 || fraction > 1
+      || !Number.isFinite(windowMs) || windowMs <= 0) throw new RangeError('Invalid safety buffer');
   if (fraction <= 0 || timeLeftMs <= 0) return 0;
-  if (windowMs <= 0) return 0;
   const ramp = Math.max(0, Math.min(1, timeLeftMs / windowMs));
   return fraction * ramp;
 }
@@ -102,31 +104,21 @@ function buildPeriods(nowMs: number, resetAtMs: number, windowStartMs: number, k
   const timeLeft = resetAtMs - nowMs;
   if (timeLeft <= 0) return [];
   const window = Math.max(1, resetAtMs - windowStartMs);
-  let step = Math.max(1, knobs.periodMs);
-  if (Math.ceil(timeLeft / step) > knobs.maxPeriods) step = timeLeft / knobs.maxPeriods;
+  const count = Math.min(knobs.maxPeriods, Math.ceil(timeLeft / knobs.periodMs));
+  const step = Math.ceil(timeLeft / knobs.periodMs) > knobs.maxPeriods
+    ? timeLeft / knobs.maxPeriods : knobs.periodMs;
   const periods: Period[] = [];
   let cursor = nowMs;
   let prevCeiling = used;
-  const flexSlack = Math.max(0, knobs.flex - 1) * (Math.max(1, knobs.periodMs) / window);
-  while (cursor < resetAtMs - 0.5 && periods.length < knobs.maxPeriods + 1) {
-    const endMs = Math.min(resetAtMs, cursor + step);
-    const timeLeftEnd = Math.max(0, resetAtMs - endMs);
-    const cap = Math.min(1 - holdAt(timeLeftEnd, knobs), idealAt(windowStartMs, resetAtMs, endMs) + flexSlack);
+  const flexSlack = Math.max(0, knobs.flex - 1) * (knobs.periodMs / window);
+  for (let index = 0; index < count; index += 1) {
+    const endMs = index === count - 1 ? resetAtMs : Math.min(resetAtMs, cursor + step);
+    const cap = Math.min(1 - holdAt(resetAtMs - endMs, knobs),
+      idealAt(windowStartMs, resetAtMs, endMs) + flexSlack);
     const ceiling = Math.max(prevCeiling, clamp01(cap));
-    periods.push({
-      startMs: cursor,
-      endMs,
-      natural: Math.max(0, (endMs - cursor) / window),
-      ceiling,
-    });
+    periods.push({ startMs: cursor, endMs, natural: (endMs - cursor) / window, ceiling });
     prevCeiling = ceiling;
     cursor = endMs;
-  }
-  if (periods.length > 0) {
-    const last = periods[periods.length - 1]!;
-    last.endMs = resetAtMs;
-    last.natural = Math.max(0, (last.endMs - last.startMs) / window);
-    last.ceiling = 1;
   }
   return periods;
 }
@@ -162,7 +154,7 @@ function roomForAdd(used: number, periods: readonly Period[], spends: readonly n
 }
 
 function committed(plannedFirst: number, used: number, timeLeftMs: number, knobs: HorizonKnobs): number {
-  if (timeLeftMs <= 0) return Math.max(0, 1 - used);
+  if (timeLeftMs <= 0) return 0;
   const room = Math.max(0, 1 - holdAt(timeLeftMs, knobs) - used);
   return Math.max(0, Math.min(plannedFirst, room));
 }
@@ -179,10 +171,14 @@ function seriesFor(input: {
 }): PoolPaceSeries {
   const points: PacePoint[] = [{
     atMs: input.nowMs,
-    actualCumulative: input.used,
+    actualCumulative: input.stamp?.atMs === input.nowMs ? input.used : null,
     idealPace: idealAt(input.windowStartMs, input.resetAtMs, input.nowMs),
     projectedCumulative: input.used,
   }];
+  if (input.stamp && input.stamp.atMs < input.nowMs) {
+    points.unshift({ atMs: input.stamp.atMs, actualCumulative: input.used,
+      idealPace: idealAt(input.windowStartMs, input.resetAtMs, input.stamp.atMs), projectedCumulative: null });
+  }
   let cursor = input.used;
   input.periods.forEach((period, index) => {
     cursor += input.spends[index] ?? 0;
@@ -197,15 +193,43 @@ function seriesFor(input: {
     poolId: input.poolId,
     projection: 'derived',
     isReading: false,
-    actualCumulative: input.used,
+    actualCumulative: input.stamp ? input.used : null,
     idealPaceNow: idealAt(input.windowStartMs, input.resetAtMs, input.nowMs),
     projectedLanding: cursor,
     uncertainty: input.stamp?.uncertainty ?? 1,
-    stale: input.stamp?.stale ?? false,
+    stale: input.stamp?.stale ?? true,
     readingAgeMs: input.stamp?.ageMs ?? null,
     readingSource: input.stamp?.source ?? null,
     points,
   };
+}
+
+function validateInput(input: {
+  used: number; nowMs: number; resetAtMs: number; windowStartMs: number;
+  knobs: HorizonKnobs; stamp?: ReadingStamp | null;
+}): void {
+  const { knobs, stamp } = input;
+  if (![input.nowMs, input.resetAtMs, input.windowStartMs].every(Number.isSafeInteger)
+      || input.windowStartMs >= input.resetAtMs || input.nowMs < input.windowStartMs
+      || !Number.isFinite(input.used) || input.used < 0 || input.used > 1
+      || ![knobs.bufferFraction, knobs.reserveFraction].every((v) => Number.isFinite(v) && v >= 0 && v <= 1)
+      || knobs.bufferFraction + knobs.reserveFraction > 1
+      || !Number.isFinite(knobs.bufferWindowMs) || knobs.bufferWindowMs <= 0
+      || !Number.isFinite(knobs.periodMs) || knobs.periodMs < 1
+      || !Number.isInteger(knobs.maxPeriods) || knobs.maxPeriods < 1 || knobs.maxPeriods > 256
+      || !Number.isFinite(knobs.flex) || knobs.flex < 1 || knobs.flex > 100
+      || ![knobs.deviationWeight, knobs.flexPenalty, knobs.landingWeight]
+        .every((v) => Number.isFinite(v) && v >= 0 && v <= 1e6)) {
+    throw new RangeError('Invalid pacing window or knobs');
+  }
+  if (stamp && (!['manual', 'config'].includes(stamp.source)
+      || !Number.isSafeInteger(stamp.atMs) || stamp.atMs > input.nowMs
+      || stamp.atMs < input.windowStartMs
+      || !Number.isFinite(stamp.ageMs) || stamp.ageMs !== input.nowMs - stamp.atMs
+      || typeof stamp.stale !== 'boolean'
+      || !Number.isFinite(stamp.uncertainty) || stamp.uncertainty < 0 || stamp.uncertainty > 1)) {
+    throw new RangeError('Invalid pacing reading stamp');
+  }
 }
 
 export function paceWindow(input: {
@@ -217,7 +241,8 @@ export function paceWindow(input: {
   knobs: HorizonKnobs;
   stamp?: ReadingStamp | null;
 }): PacePlan {
-  const used = clamp01(input.used);
+  validateInput(input);
+  const used = input.used;
   const periods = buildPeriods(input.nowMs, input.resetAtMs, input.windowStartMs, input.knobs, used);
   const spends = evenSpends(used, periods);
   const allowance = committed(spends[0] ?? Math.max(0, 1 - used), used, input.resetAtMs - input.nowMs, input.knobs);
@@ -237,11 +262,11 @@ export function paceWindow(input: {
 function valuesVary(values: readonly number[]): boolean {
   if (values.length <= 1) return false;
   const first = values[0] ?? 0;
-  return values.some((value) => Math.abs(value - first) > 1e-9);
+  return values.some((value) => value !== first);
 }
 
 function objectiveTerm(coef: number, name: string): string {
-  const abs = Math.abs(coef).toFixed(6);
+  const abs = Math.abs(coef).toFixed(12);
   return coef < 0 ? `- ${abs} ${name}` : `${abs} ${name}`;
 }
 
@@ -262,14 +287,14 @@ function buildPaceLp(used: number, periods: readonly Period[], spends: readonly 
   let cumulative = '';
   periods.forEach((period, index) => {
     cumulative = cumulative === '' ? `s${index}` : `${cumulative} + s${index}`;
-    lines.push(` cum${index}: ${cumulative} <= ${Math.max(0, period.ceiling - used).toFixed(6)}`);
+    lines.push(` cum${index}: ${cumulative} <= ${Math.max(0, period.ceiling - used).toFixed(12)}`);
     const ideal = spends[index] ?? period.natural;
-    lines.push(` devhi${index}: s${index} - d${index} <= ${ideal.toFixed(6)}`);
-    lines.push(` devlo${index}: - s${index} - d${index} <= ${(-ideal).toFixed(6)}`);
-    lines.push(` flex${index}: s${index} - o${index} <= ${(knobs.flex * period.natural).toFixed(6)}`);
+    lines.push(` devhi${index}: s${index} - d${index} <= ${ideal.toFixed(12)}`);
+    lines.push(` devlo${index}: - s${index} - d${index} <= ${(-ideal).toFixed(12)}`);
+    lines.push(` flex${index}: s${index} - o${index} <= ${(knobs.flex * period.natural).toFixed(12)}`);
   });
   const names = periods.map((_, index) => `s${index}`).join(' + ');
-  lines.push(names === '' ? ' land: short = 0' : ` land: ${names} + short = ${target.toFixed(6)}`);
+  lines.push(names === '' ? ' land: short = 0' : ` land: ${names} + short = ${target.toFixed(12)}`);
   lines.push('Bounds');
   periods.forEach((_, index) => {
     lines.push(` 0 <= s${index} <= 1`);
@@ -281,25 +306,36 @@ function buildPaceLp(used: number, periods: readonly Period[], spends: readonly 
   return `${lines.join('\n')}\n`;
 }
 
-async function flexSpends(used: number, periods: readonly Period[], even: readonly number[], values: readonly number[], knobs: HorizonKnobs, solver: MilpSolver, budgetMs: number): Promise<number[] | null> {
+async function flexSpends(used: number, periods: readonly Period[], even: readonly number[], values: readonly number[], knobs: HorizonKnobs, solver: PaceSolver, budgetMs: number): Promise<number[] | null> {
   if (periods.length === 0 || !valuesVary(values)) return null;
-  let outcome;
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    outcome = await solver(buildPaceLp(used, periods, even, values, knobs), budgetMs);
+    // The deadline bounds async adapters. A synchronous solver must enforce its
+    // own budget (or run in a worker); JavaScript cannot preempt a blocking call.
+    const outcome = await Promise.race([
+      Promise.resolve().then(() => solver(buildPaceLp(used, periods, even, values, knobs), budgetMs)),
+      new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), budgetMs); }),
+    ]);
+    if (!outcome || outcome.status !== 'optimal') return null;
+    const spends = periods.map((_, index) => outcome.values[`s${index}`]);
+    if (!spends.every((value) => typeof value === 'number' && Number.isFinite(value) && value >= 0)) return null;
+    const target = 1 - used;
+    if (Math.abs(spends.reduce((sum, spend) => sum + spend, 0) - target) > 1e-8) return null;
+    let cursor = used;
+    for (let index = 0; index < periods.length; index += 1) {
+      const cap = Math.min(1, periods[index]!.ceiling);
+      if (cursor + spends[index]! > cap + 1e-8) return null;
+      // Remove solver roundoff before exposing any spend, so accepted plans
+      // never grant more than the actual cumulative ceiling or remaining quota.
+      spends[index] = Math.min(spends[index]!, Math.max(0, cap - cursor));
+      cursor += spends[index]!;
+    }
+    return spends;
   } catch {
     return null;
+  } finally {
+    clearTimeout(timer);
   }
-  if (outcome.status !== 'optimal') return null;
-  const spends = periods.map((_, index) => Math.max(0, outcome.values[`s${index}`] ?? 0));
-  const total = spends.reduce((sum, spend) => sum + spend, 0);
-  const target = Math.max(0, 1 - used);
-  if (Math.abs(total - target) > 0.02) return null;
-  let cursor = 0;
-  for (let index = 0; index < periods.length; index += 1) {
-    cursor += spends[index] ?? 0;
-    if (cursor > periods[index]!.ceiling - used + 0.02) return null;
-  }
-  return spends;
 }
 
 export async function planHorizon(input: {
@@ -311,11 +347,19 @@ export async function planHorizon(input: {
   values?: readonly number[];
   knobs: HorizonKnobs;
   stamp?: ReadingStamp | null;
-  solver?: MilpSolver;
+  solver?: PaceSolver;
   solverBudgetMs?: number;
 }): Promise<HorizonPlan> {
+  // Isolate the result from caller mutation while an asynchronous adapter runs.
+  input = { ...input, knobs: { ...input.knobs }, values: Array.from(input.values ?? []),
+    stamp: input.stamp ? { ...input.stamp } : null };
   const base = paceWindow(input);
   const values = input.values ?? [];
+  const budgetMs = input.solverBudgetMs ?? 100;
+  if (!values.every((value) => Number.isFinite(value) && Math.abs(value) <= 1e6)
+      || !Number.isInteger(budgetMs) || budgetMs < 1 || budgetMs > 60_000) {
+    throw new RangeError('Invalid pacing values or solver budget');
+  }
   if (!input.solver || !valuesVary(values)) {
     return { ...base, solver: 'greedy' };
   }
@@ -326,7 +370,7 @@ export async function planHorizon(input: {
     values,
     input.knobs,
     input.solver,
-    input.solverBudgetMs ?? 100,
+    budgetMs,
   );
   if (!flexed) return { ...base, solver: 'greedy' };
   const used = clamp01(input.used);

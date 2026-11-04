@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { chmodSync, existsSync, lstatSync, mkdtempSync, readdirSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { performance } from 'node:perf_hooks';
 import { canonical, digest } from '../src/core/universe/artifacts.js';
 import type { UniverseCampaignReadiness } from '../src/core/universe/campaign-readiness.js';
 import type { UniverseCampaignSummary } from '../src/core/universe/types.js';
@@ -11,8 +12,10 @@ import * as locks from '../src/core/fleet/local-store-lock.js';
 
 const hooks = vi.hoisted(() => ({ readiness: vi.fn(), run: vi.fn(), campaign: vi.fn(), plan: vi.fn(), acquire: vi.fn(), proof: vi.fn() }));
 vi.mock('../src/core/universe/campaign-readiness.js', () => ({ readUniverseCampaignReadiness: hooks.readiness }));
-vi.mock('../src/core/universe/campaign.js', async (original) => ({
-  ...await original<typeof import('../src/core/universe/campaign.js')>(), runUniverseCampaignOwned: hooks.run,
+// Do not import the execution graph while constructing its mock: a cycle can
+// bind the real runner before this factory has returned. No workers run here.
+vi.mock('../src/core/universe/campaign.js', () => ({
+  runUniverseCampaignOwned: hooks.run, runUniverseCampaign: hooks.run,
 }));
 vi.mock('../src/core/universe/execution.js', async (original) => ({
   ...await original<typeof import('../src/core/universe/execution.js')>(), acquireUniverseExecution: hooks.acquire,
@@ -174,6 +177,9 @@ describe('Durable controller drain execution', () => {
   });
 
   it.each(['unchanged', 'campaign', 'dependency', 'ownership'] as const)('revalidates %s evidence after final intent transaction contention', async (changed) => {
+    // Keep the evidence-contention fixture's scheduler clock independent of
+    // host disk latency. Record timestamps and real lock contention still run.
+    vi.spyOn(performance, 'now').mockReturnValue(100);
     const f = fixture();
     f.finish('a');
     f.definition.tasks[1]!.dependsOn = ['a'];
@@ -241,6 +247,11 @@ describe('Durable controller drain execution', () => {
   });
 
   it('finishes an admitted campaign, retains pending work, and resumes only on exact owner instruction', async () => {
+    // Model an immediate owner resume without charging private-ledger disk
+    // latency to the synthetic campaign. Deadline-expiry cases advance time.
+    const instant = Date.now();
+    vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(instant);
+    vi.spyOn(performance, 'now').mockReturnValue(100);
     const f = fixture(); const started = deferred<void>(); const complete = deferred<UniverseCampaignSummary>();
     hooks.run.mockImplementationOnce(() => { started.resolve(); return complete.promise; });
     const pending = runUniversePortfolioController(f.definition, f.options);
@@ -355,7 +366,17 @@ describe('Durable controller drain execution', () => {
 
   it.each(['cancelled', 'timed-out'] as const)('%s bounds live transaction waiting at final admission without consuming an intent', async (expectedStatus) => {
     const f = fixture();
-    if (expectedStatus === 'timed-out') f.definition.maxDurationMs = 2_000;
+    const realNow = performance.now.bind(performance);
+    let timingFrom: number | null = null;
+    if (expectedStatus === 'timed-out') {
+      f.definition.maxDurationMs = 2_000;
+      // Start the real two-second budget at the contention point being tested,
+      // after fixture enrollment I/O. Keep measuring actual elapsed wait time.
+      const instant = Date.now();
+      vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(instant);
+      vi.spyOn(performance, 'now').mockImplementation(() =>
+        100 + (timingFrom === null ? 0 : realNow() - timingFrom));
+    }
     const caller = new AbortController();
     const entered = deferred<void>();
     let transactionLock: locks.LocalStoreLock | undefined;
@@ -376,6 +397,7 @@ describe('Durable controller drain execution', () => {
       await Promise.race([entered.promise, pending.then(() => { throw new Error('Controller returned before admission contention'); })]);
       const before = f.events();
       const originalDeadline = readUniversePortfolioController(f.definition.id, f.options).deadlineAt;
+      timingFrom = realNow();
       const stoppedAt = performance.now();
       if (expectedStatus === 'cancelled') caller.abort();
       const result = await pending;

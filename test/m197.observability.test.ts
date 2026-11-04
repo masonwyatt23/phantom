@@ -55,7 +55,8 @@ vi.mock('../src/core/fleet/status.js', () => ({
   resolveAutonomyControlMode: () => 'disabled',
 }));
 
-vi.mock('../src/core/sandbox/audit.js', () => ({
+vi.mock('../src/core/sandbox/audit.js', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../src/core/sandbox/audit.js')>(),
   readAudit: () => mockAuditEntries,
 }));
 

@@ -16,8 +16,10 @@ const hooks = vi.hoisted(() => ({ readiness: vi.fn(), run: vi.fn(), campaign: vi
   preflight: vi.fn(), deliver: vi.fn(), deliveries: vi.fn(), acquire: vi.fn(), runtime: vi.fn() }));
 vi.mock('../src/core/universe/campaign-readiness.js', () => ({ readUniverseCampaignReadiness: hooks.readiness }));
 vi.mock('../src/core/universe/resource-runtime-check.js', () => ({ checkResourceGenerationRuntime: hooks.runtime }));
-vi.mock('../src/core/universe/campaign.js', async (original) => ({
-  ...await original<typeof import('../src/core/universe/campaign.js')>(), runUniverseCampaignOwned: hooks.run,
+// Do not import the execution graph while constructing its mock: a cycle can
+// bind the real runner before this factory has returned. No workers run here.
+vi.mock('../src/core/universe/campaign.js', () => ({
+  runUniverseCampaignOwned: hooks.run, runUniverseCampaign: hooks.run,
 }));
 vi.mock('../src/core/universe/execution.js', async (original) => ({
   ...await original<typeof import('../src/core/universe/execution.js')>(), acquireUniverseExecution: hooks.acquire,
@@ -116,7 +118,9 @@ function fixture(ids = ['a'], maxParallel = 1) {
 describe('Portfolio controller private-ledger fault acceptance', () => {
   it('refuses a preexisting controller when a host requires new enrollment', async () => {
     const f = fixture();
-    expect((await runUniversePortfolioController(f.definition, f.options)).status).toBe('completed');
+    const result = await runUniversePortfolioController(f.definition, f.options);
+    expect(hooks.run.mock.calls, JSON.stringify(result)).toHaveLength(1);
+    expect(result, JSON.stringify(result)).toMatchObject({ status: 'completed' });
     const before = JSON.stringify(f.events());
     hooks.run.mockClear();
     await expect(runUniversePortfolioController(f.definition, { ...f.options, requireNewEnrollment: true }))

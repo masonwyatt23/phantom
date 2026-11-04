@@ -18,7 +18,7 @@ import { makeColors, isTty } from './ui.js';
  * list (or HELP_ENTRIES) ever falls out of sync with it again).
  */
 export const TOP_LEVEL_COMMANDS: string[] = [
-  'graph',
+  'graph', 'route',
   'index', 'go', 'status', 'ls', 'open', 'tidy', 'config', 'doctor', 'companions', 'team', 'lanes', 'steward', 'improve', 'autopilot', 'metrics', 'init',
   'setup', 'mcp', 'run', 'runs', 'eval', 'pulse', 'pulse-export', 'pulse-test',
   'new', 'ship', 'recall', 'learn', 'genome',

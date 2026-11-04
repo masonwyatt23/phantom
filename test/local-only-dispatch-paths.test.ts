@@ -244,6 +244,7 @@ describe('§A dispatch-path inventory', () => {
     // 3.14: comms/director.ts and comms/elon-dialogue.ts left this list — the
     // Director is retired and the dialogue delegates to the Leader thread,
     // whose replies go through leader-seat.ts (gated per transport).
+    'core/bridge/pr-title.ts',       // loopback-only PR title generation; gate rechecked for each call
     'core/fleet/manager.ts',         // ollamaDirectComplete — the local judge, 3-min timeout
     'core/genome/playbook.ts',       // LM Studio playbook synthesis (documented LOCAL-ONLY)
     'core/vision/strategist.ts',     // ollamaDirectComplete — mirrors manager.ts

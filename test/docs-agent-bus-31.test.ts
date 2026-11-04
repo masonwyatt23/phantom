@@ -1,3 +1,4 @@
+import { it } from 'vitest';
 /**
  * Regression test: docs/AGENT-BUS.md exists and contains the key
  * contract details that an agent or contributor needs.
@@ -49,4 +50,4 @@ function run(): void {
     'docs/README.md must link AGENT-BUS.md');
 }
 
-run();
+it('documents the agent bus routes, envelope fields, caps and navigation', run);
