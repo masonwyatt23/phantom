@@ -8,15 +8,18 @@
  * Reuses `precheckJob` — the same extraction and verdict logic as
  * `phm fleet job-precheck` — over the same `gitJobProbe` reader, with the
  * ref fixed at origin/master: no caller ref, filesystem root or cwd, no
- * fetch and no shell. The answer is advisory recorded evidence: whether
- * each named path is present on the ref and the identity of its last
- * commit there. Path presence or last-commit identity cannot prove
- * semantic completion — only that the evidence the bounded probe saw
- * matched. A fresh verdict does not prove no overlapping work exists.
+ * fetch and no shell. The symbolic ref moves under continuous merges, so
+ * it is resolved once to an immutable commit before any path probe and
+ * reported as resolvedRef: every fact in one answer describes the same
+ * landed tree. The answer is advisory recorded evidence: whether each
+ * named path is present on the ref and the identity of its last commit
+ * there. Path presence or last-commit identity cannot prove semantic
+ * completion — only that the evidence the bounded probe saw matched. A
+ * fresh verdict does not prove no overlapping work exists.
  */
 import { precheckJob, type JobPrecheckGit, type PrecheckFact } from '../core/fleet/job-precheck.js';
 import { validJobId } from '../core/fleet/job-path-history.js';
-import { gitJobProbe } from '../cli/fleet-job-precheck.js';
+import { gitJobProbe, resolveJobPrecheckRef } from '../cli/fleet-job-precheck.js';
 import { sanitizePublicJson } from '../core/util/public-json.js';
 
 /** Fixed probe ref: the planner asks about landed work, so only origin/master counts. */
@@ -32,7 +35,16 @@ export interface FleetJobPrecheckArgs {
 }
 
 export interface FleetJobPrecheckDeps {
+  /**
+   * Fully injected probe for hermetic tests: it never touches the real
+   * repository, so resolution is skipped and the envelope reports an
+   * explicit null resolvedRef rather than a fabricated snapshot id.
+   */
   git?: JobPrecheckGit;
+  /** Resolve the fixed symbolic ref once; defaults to the CLI's rev-parse resolver. */
+  resolveRef?: (ref: string) => Promise<string>;
+  /** Build the probe over the resolved commit; defaults to the shared gitJobProbe. */
+  gitJobProbe?: (resolvedRef: string) => JobPrecheckGit;
 }
 
 export interface FleetJobPrecheckV1 {
@@ -42,13 +54,15 @@ export interface FleetJobPrecheckV1 {
   generatedAt: string;
   note: string;
   ref: string;
+  /** Immutable commit every fact was probed on; null only when the git reader was injected without a resolver. */
+  resolvedRef: string | null;
   jobId?: string;
   facts: PrecheckFact[];
   newTestFiles: string[];
   verdict: 'fresh' | 'partly-on-master' | 'likely-done';
 }
 
-const NOTE = `Advisory recorded evidence only: each fact records whether the path the draft named is present on ${FLEET_JOB_PRECHECK_REF} and, when present, the identity of its last commit there. Path presence or last-commit identity cannot prove semantic completion — a likely-done verdict means only that every named non-test src path exists on the ref with the required last-commit evidence, and a fresh verdict does not prove no overlapping work exists. Never a queue, dispatch, merge or correctness verdict; this call wrote nothing and enqueued nothing.`;
+const NOTE = `Advisory recorded evidence only: each fact records whether the path the draft named is present on ${FLEET_JOB_PRECHECK_REF} and, when present, the identity of its last commit there; resolvedRef names the single immutable commit every fact was probed on, so merges landing mid-answer cannot mix trees inside one response. Path presence or last-commit identity cannot prove semantic completion — a likely-done verdict means only that every named non-test src path exists on the ref with the required last-commit evidence, and a fresh verdict does not prove no overlapping work exists. Never a queue, dispatch, merge or correctness verdict; this call wrote nothing and enqueued nothing.`;
 
 const PRECHECK_KEYS = new Set(['markdown', 'jobId']);
 
@@ -76,11 +90,21 @@ export function parseFleetJobPrecheckArgs(args: Record<string, unknown>): FleetJ
  * this boundary, all passed through the shared public-JSON scrub.
  */
 export async function readFleetJobPrecheck(input: FleetJobPrecheckArgs, deps: FleetJobPrecheckDeps = {}): Promise<FleetJobPrecheckV1> {
-  const report = await precheckJob(input.markdown, deps.git ?? gitJobProbe(FLEET_JOB_PRECHECK_REF), { jobId: input.jobId });
+  // Resolve the symbolic ref to one immutable commit before any path probe:
+  // a fetch landing mid-answer must not mix trees. Resolution failures
+  // propagate as tool errors, never as a fresh verdict. An injected git
+  // reader with no resolver skips this — nothing may touch the repository
+  // — and reports an explicit null instead of a fabricated snapshot id.
+  let resolvedRef: string | null = null;
+  if (deps.resolveRef || !deps.git) {
+    resolvedRef = await (deps.resolveRef ?? resolveJobPrecheckRef)(FLEET_JOB_PRECHECK_REF);
+    if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(resolvedRef)) throw new Error('invalid resolved commit');
+  }
+  const report = await precheckJob(input.markdown, deps.git ?? (deps.gitJobProbe ?? gitJobProbe)(resolvedRef!), { jobId: input.jobId });
   return sanitizePublicJson({
     schemaVersion: 1, snapshotKind: 'local-persisted', authority: 'none',
     generatedAt: new Date().toISOString(), note: NOTE,
-    ref: FLEET_JOB_PRECHECK_REF,
+    ref: FLEET_JOB_PRECHECK_REF, resolvedRef,
     ...(report.jobId !== undefined ? { jobId: report.jobId } : {}),
     facts: report.facts, newTestFiles: report.newTestFiles, verdict: report.verdict,
   }) as FleetJobPrecheckV1;
