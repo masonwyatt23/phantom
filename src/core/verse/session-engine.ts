@@ -1114,6 +1114,36 @@ function redact(text: string, redactions: Redaction[]): string {
 // Engine
 // ---------------------------------------------------------------------------
 
+/**
+ * In-flight verse chat turns — a process-local count. The desktop self-update
+ * restart gate (self-update-restart-gate.ts) defers its supervised SIGTERM
+ * until this reads 0, so a reply still streaming is never cut off. The count
+ * lives in THIS module because the engine is a Tier-1 import-closure member:
+ * a static import of the gate's own file would grow the protected closure
+ * snapshot (test/fixtures/authority/tier1-closure.json), so the gate module —
+ * outside the closure — re-exports these instead.
+ */
+let activeVerseTurnCount = 0;
+
+/**
+ * Mark a verse chat turn in flight. The returned release decrements once —
+ * calling it again is a no-op, so close-out paths can be idempotent.
+ */
+export function beginVerseTurn(): () => void {
+  activeVerseTurnCount += 1;
+  let released = false;
+  return (): void => {
+    if (released) return;
+    released = true;
+    activeVerseTurnCount -= 1;
+  };
+}
+
+/** How many verse chat turns are in flight in this process right now. */
+export function activeVerseTurns(): number {
+  return activeVerseTurnCount;
+}
+
 export function createVerseEngine(opts: VerseEngineOptions = {}): VerseEngineHandle {
   const root = opts.root ?? join(homedir(), '.ashlr', 'verse');
   const spawn = opts.spawn ?? nodeSpawn;
@@ -1132,6 +1162,17 @@ export function createVerseEngine(opts: VerseEngineOptions = {}): VerseEngineHan
   const running = new Map<string, RunningTurn>();
   // One bounded summary per accepted turn, independent of subscriptions or focus.
   const turnStatuses = new Map<string, { turnId: string; task: string; answer: string; streaming: boolean; cancelled: boolean }>();
+  // The restart gate's in-flight release, keyed by session id and held for
+  // exactly as long as `turnStatuses` holds an entry: a deferred self-update
+  // restart (self-update-restart-gate.ts) waits on this counter, so a chat
+  // still streaming is never SIGTERMed mid-reply.
+  const turnReleases = new Map<string, () => void>();
+  /** The turn's busy marker and its gate release move together — every close-out path ends both. */
+  const endVerseTurn = (id: string): void => {
+    turnStatuses.delete(id);
+    turnReleases.get(id)?.();
+    turnReleases.delete(id);
+  };
   const turnHooks = opts.turnHooks ?? null;
   /**
    * Turns admitted but waiting on `turnHooks.beforeTurn` (the checkpoint) —
@@ -1483,7 +1524,7 @@ export function createVerseEngine(opts: VerseEngineOptions = {}): VerseEngineHan
       // A subscriber may delete the chat. Never recreate its log or claim a
       // durable result when the append failed.
       if (!result || store.get(id) !== session) {
-        turnStatuses.delete(id);
+        endVerseTurn(id);
         return null;
       }
       if (result.type === 'assistant-status') session.lastResult = result.text;
@@ -1493,7 +1534,7 @@ export function createVerseEngine(opts: VerseEngineOptions = {}): VerseEngineHan
       stored = store.appendEvent(id, event, nowIso());
     } catch (err) {
       onStorageFailure(id, err, event);
-      if (event.type === 'turn-done') turnStatuses.delete(id);
+      if (event.type === 'turn-done') endVerseTurn(id);
       return null;
     }
     if (status && 'turnId' in event && event.turnId === status.turnId) {
@@ -1508,7 +1549,7 @@ export function createVerseEngine(opts: VerseEngineOptions = {}): VerseEngineHan
     }
     fanOut(id, stored);
     if (reasoningTap) tapReasoning(id, stored);
-    if (event.type === 'turn-done') turnStatuses.delete(id);
+    if (event.type === 'turn-done') endVerseTurn(id);
     return stored;
   }
 
@@ -2403,7 +2444,7 @@ export function createVerseEngine(opts: VerseEngineOptions = {}): VerseEngineHan
         // Never an unhandled rejection: a throw here is logged, and a turn that
         // could not start is not left busy forever.
         if (gating.get(id) === gate) gating.delete(id);
-        if (turnStatuses.get(id)?.turnId === turnId) turnStatuses.delete(id);
+        if (turnStatuses.get(id)?.turnId === turnId) endVerseTurn(id);
         log('error', `session ${id}: turn could not start after its checkpoint (${err instanceof Error ? err.name : 'error'})`);
       });
       return;
@@ -2739,23 +2780,26 @@ export function createVerseEngine(opts: VerseEngineOptions = {}): VerseEngineHan
     if (session.turnCount === 0 && session.title === DEFAULT_TITLE) session.title = autoTitle(text);
     storageFailed.delete(id);
     turnStatuses.set(id, { turnId, task: statusLine(scrubSecrets(text), 100), answer: '', streaming: false, cancelled: false });
+    // The restart gate counts the turn from here — the committed send — until
+    // the same close-out marker that clears `turnStatuses` (see endVerseTurn).
+    turnReleases.set(id, beginVerseTurn());
     const userMessage = emit(id, { type: 'user-message', turnId, text, ...(chip ? { playbook: chip } : {}) });
     if (!userMessage) {
       // The log cannot be written (onStorageFailure already recorded it):
       // a turn nobody can ever see must not spend.
-      turnStatuses.delete(id);
+      endVerseTurn(id);
       throw new Error('verse session log could not be written');
     }
     if (store.get(id) !== session) {
-      turnStatuses.delete(id);
+      endVerseTurn(id);
       throw new VerseError('VERSE_SESSION_NOT_FOUND', 'session was deleted');
     }
     if (!emit(id, { type: 'assistant-status', turnId, phase: 'acknowledgement', text: turnAcknowledgement(scrubSecrets(text)) })) {
-      turnStatuses.delete(id);
+      endVerseTurn(id);
       throw new Error('verse session acknowledgement could not be written');
     }
     if (store.get(id) !== session) {
-      turnStatuses.delete(id);
+      endVerseTurn(id);
       throw new VerseError('VERSE_SESSION_NOT_FOUND', 'session was deleted');
     }
     session.status = 'running';
@@ -2797,7 +2841,7 @@ export function createVerseEngine(opts: VerseEngineOptions = {}): VerseEngineHan
         isRecovery: false,
       });
     } catch (err) {
-      if (turnStatuses.get(id)?.turnId === turnId) turnStatuses.delete(id);
+      if (turnStatuses.get(id)?.turnId === turnId) endVerseTurn(id);
       throw err;
     }
     return { turnId, session: cloneSession(store.get(id) ?? session) };
@@ -3201,7 +3245,7 @@ export function createVerseEngine(opts: VerseEngineOptions = {}): VerseEngineHan
         finalize(id, turn, null);
       }
       listeners.delete(id);
-      turnStatuses.delete(id);
+      endVerseTurn(id);
       store.remove(id);
       listingKeys.delete(id);
       // V3.10: the chat's private attachments and queued follow-ups go with it.

@@ -52,6 +52,7 @@ import type { CompanionList, CompanionTask } from '../proactive/coordination-typ
 import { scrubSecrets } from '../util/scrub.js';
 import { fetchOrigin, readSelfUpdateStatus, type SelfUpdateDeps } from './self-update-status.js';
 import { applySelfUpdate, detectRestartMode, scheduleRestart, realSelfUpdateRunner, selfUpdateApplyInProgress, type SelfUpdateApplyResult } from './self-update-apply.js';
+import { waitForQuietTurns } from './self-update-restart-gate.js';
 import { probeReleases, type OpsReleaseProbeDeps } from './ops-releases.js';
 import {
   OPS_BOARD_JOURNAL_WINDOW_MS,
@@ -84,6 +85,14 @@ import {
 } from './ops-types.js';
 
 export type OpsSelfUpdateWithApplying = OpsSelfUpdateV1 & { applying: { startedAt: string } | null };
+
+/**
+ * The default apply closure's restart report: the frozen SelfUpdateApplyResult
+ * shape plus `deferUntilQuiet` — true when the restart was deferred onto the
+ * quiet-turn gate rather than scheduled inline.
+ */
+type SelfUpdateRestartWithDefer = SelfUpdateApplyResult['restart'] & { deferUntilQuiet: boolean };
+type SelfUpdateApplyWithDefer = SelfUpdateApplyResult & { restart: SelfUpdateRestartWithDefer };
 
 /** Test seams : production defaults are the real buses, never fixtures. */
 export interface OpsApiDeps {
@@ -431,7 +440,7 @@ export function createOpsApi(deps: OpsApiDeps = {}): ApiModule {
   const enrolled = deps.enrolled ?? (() => listEnrolled());
   const releases = deps.releases ?? ((paths: readonly string[]) => probeReleases(paths, deps.releaseDeps));
   const post = deps.postMessage ?? defaultPost;
-  const apply = deps.selfUpdateApply ?? (async (opts: { restart: boolean }): Promise<SelfUpdateApplyResult> => {
+  const apply = deps.selfUpdateApply ?? (async (opts: { restart: boolean }): Promise<SelfUpdateApplyWithDefer> => {
     let repoRoot: string | null = null;
     // The status reader owns repository discovery. Capture its resolved root
     // through its reader seam without probing git or reading package contents.
@@ -443,18 +452,25 @@ export function createOpsApi(deps: OpsApiDeps = {}): ApiModule {
     });
     if (!repoRoot) {
       const at = new Date(now()).toISOString();
+      const restart: SelfUpdateRestartWithDefer = { required: false, mode: detectRestartMode(process.env, process.argv), deferUntilQuiet: false };
       return {
         v: 1, startedAt: at, finishedAt: at, outcome: 'refused', reason: 'Repository unavailable',
         fromCommit: null, toCommit: null, steps: [],
-        restart: { required: false, mode: detectRestartMode(process.env, process.argv) },
+        restart,
       };
     }
     const result = await applySelfUpdate({ runner: realSelfUpdateRunner, repoRoot, cliEntry: join(repoRoot, 'dist/cli/index.js') });
     const mode = detectRestartMode(process.env, process.argv);
-    if (opts.restart && result.outcome === 'updated' && result.restart.required && mode === 'sidecar-supervised') {
-      scheduleRestart({ mode });
-    }
-    return { ...result, restart: { ...result.restart, mode } };
+    // A supervised restart SIGTERMs this process: fired inline it would land
+    // mid-reply on any chat turn still streaming. Defer it to the first quiet
+    // moment (bounded — self-update-restart-gate.ts), in the background, so
+    // this route still answers inside the apply window. The injected
+    // selfUpdateApply seam above is unchanged; the flag is the route's word
+    // for "the restart is pending on quiet turns, not already scheduled".
+    const deferUntilQuiet = opts.restart && result.outcome === 'updated' && result.restart.required && mode === 'sidecar-supervised';
+    if (deferUntilQuiet) void waitForQuietTurns({}).then(() => scheduleRestart({ mode }));
+    const restart: SelfUpdateRestartWithDefer = { ...result.restart, mode, deferUntilQuiet };
+    return { ...result, restart };
   });
   let applyInFlight = false;
   let statusCache: { at: number; value: ReturnType<typeof readSelfUpdateStatus> } | null = null;
