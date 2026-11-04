@@ -12,6 +12,9 @@
  * never imported into core. The durable result lands at
  * `<ashlrHome>/verse/self-update-last.json` (tmp + rename) before returning.
  * One apply at a time: concurrent callers share the in-flight promise.
+ * An `updated` outcome also posts a best-effort `self-update-applied`
+ * notice on the shared fleet bus (self-update-bus-notice.ts) — the notice
+ * can never change the outcome.
  *
  * RESTART evidence (desktop/src-tauri, read-only). `detectRestartMode`
  * reports `sidecar-supervised` only on markers the desktop alone sets:
@@ -39,6 +42,7 @@ import { dirname, join } from 'node:path';
 
 import { ashlrHome } from '../cloud/store.js';
 import { scrubSecrets } from '../util/scrub.js';
+import { postSelfUpdateNotice } from './self-update-bus-notice.js';
 
 export interface SelfUpdateRunResult {
   code: number | null;
@@ -61,6 +65,8 @@ export interface SelfUpdateApplyDeps {
   now?: () => number;
   resultPath?: string /* default <ashlrHome>/verse/self-update-last.json */;
   writeFile?: (path: string, text: string) => Promise<void>;
+  /** Best-effort fleet-bus notice after an `updated` apply; throwing is harmless. */
+  notify?: (result: SelfUpdateApplyResult) => void;
 }
 
 export type SelfUpdateRestartMode = 'sidecar-supervised' | 'manual';
@@ -155,6 +161,12 @@ export function scheduleRestart(opts: {
   return { scheduled: true, at: new Date(Date.now() + delayMs).toISOString() };
 }
 
+/** The production notice posts to the real inbox; tests inject `notify` instead. */
+const defaultNotify = (result: SelfUpdateApplyResult): void => {
+  if (process.env.VITEST) return;
+  postSelfUpdateNotice(result);
+};
+
 let inFlight: Promise<SelfUpdateApplyResult> | null = null;
 let applyingStartedAt: string | null = null;
 
@@ -201,6 +213,9 @@ async function runApply(deps: SelfUpdateApplyDeps): Promise<SelfUpdateApplyResul
       restart: { required: outcome === 'updated', mode: detectRestartMode(process.env, process.argv) },
     };
     await persist(resultPath, result, writeFile);
+    if (outcome === 'updated') {
+      try { (deps.notify ?? defaultNotify)(result); } catch { /* a failed notice can never change the outcome */ }
+    }
     return result;
   };
   /** Record the step and end the apply (ok=false + outcome) or continue it (ok=true). */
