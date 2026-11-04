@@ -7,7 +7,10 @@
  *     Text is the existing status composer output (email-fleet-status /
  *     telegram-fleet-status) led by the needs-you count, bounded to
  *     DAILY_BRIEF_MAX_CHARS of plain text. Skip reasons:
- *     'already-sent-today', 'not-configured', 'status-unavailable'.
+ *     'already-sent-today', 'before-send-hour', 'not-configured',
+ *     'status-unavailable'. Before notBeforeHour (default 7) in
+ *     America/New_York every channel plans 'before-send-hour' — the
+ *     unattended tick may run at any hour but the brief lands after 07:00.
  *   queue/daily-brief-last.json — the stamp: { email?: 'YYYY-MM-DD',
  *     telegram?: 'YYYY-MM-DD' } in America/New_York local date. A channel
  *     stamped today is skipped; the stamp is written only after a send
@@ -51,7 +54,7 @@ export interface DailyBriefLastSent {
   telegram?: string;
 }
 
-export type DailyBriefSkipReason = 'already-sent-today' | 'not-configured' | 'status-unavailable';
+export type DailyBriefSkipReason = 'already-sent-today' | 'before-send-hour' | 'not-configured' | 'status-unavailable';
 export type DailyBriefPlanEntry =
   | { channel: DailyBriefChannel; send: true; text: string }
   | { channel: DailyBriefChannel; send: false; reason: DailyBriefSkipReason };
@@ -80,6 +83,18 @@ export function dailyBriefLocalDay(at: Date, timeZone = 'America/New_York'): str
     return `${p('year')}-${p('month')}-${p('day')}`;
   } catch {
     return at.toISOString().slice(0, 10);
+  }
+}
+
+/** Local hour 0–23 in the operator's zone; falls back to UTC on a bad clock. */
+export function dailyBriefLocalHour(at: Date, timeZone = 'America/New_York'): number {
+  try {
+    const parts = new Intl.DateTimeFormat('en-US', { timeZone, hour: '2-digit', hourCycle: 'h23' }).formatToParts(at);
+    const hour = Number(parts.find(part => part.type === 'hour')?.value);
+    if (Number.isInteger(hour) && hour >= 0 && hour <= 23) return hour;
+    return at.getUTCHours();
+  } catch {
+    return at.getUTCHours();
   }
 }
 
@@ -163,6 +178,8 @@ export interface DailyBriefPlanDeps {
   isConfigured?: (channel: DailyBriefChannel) => boolean | Promise<boolean>;
   composeStatus?: (channel: DailyBriefChannel) => Promise<string>;
   needsYou?: () => number | null;
+  /** Earliest local hour (America/New_York) a channel may send; default 7. */
+  notBeforeHour?: number;
   /** Reader overrides forwarded to the default status composers. */
   readers?: { email?: EmailFleetStatusReaders; telegram?: TelegramFleetStatusDeps };
 }
@@ -171,10 +188,15 @@ export async function planDailyBrief(opts: { runsDir: string } & DailyBriefPlanD
   const now = opts.now ?? (() => new Date());
   const day = dailyBriefLocalDay(now());
   const needs = opts.needsYou ? opts.needsYou() : defaultNeedsYou(opts.runsDir);
+  const beforeSendHour = dailyBriefLocalHour(now()) < (opts.notBeforeHour ?? 7);
   const entries: DailyBriefPlanEntry[] = [];
   for (const channel of opts.channels ?? DAILY_BRIEF_CHANNELS) {
     if (opts.lastSent?.[channel] === day) {
       entries.push({ channel, send: false, reason: 'already-sent-today' });
+      continue;
+    }
+    if (beforeSendHour) {
+      entries.push({ channel, send: false, reason: 'before-send-hour' });
       continue;
     }
     const configured = await (opts.isConfigured ?? ((c: DailyBriefChannel) => defaultIsConfigured(opts.runsDir, c)))(channel);

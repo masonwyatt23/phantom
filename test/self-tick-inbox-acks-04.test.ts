@@ -12,6 +12,7 @@ const now = () => Date.parse('2026-11-02T06:00:00Z');
 const ok: SelfTickStep = async () => ({ exitCode: 0, output: '{}' });
 const otherSteps: Partial<SelfTickSteps> = {
   'reset-release': ok, 'lane-autohold': ok, 'planner-tick': ok, 'order-notices': ok, 'landed-sweep': ok,
+  'brief-send': ok,
 };
 beforeEach(() => {
   home = mkdtempSync(join(tmpdir(), 'inbox-acks-04-'));
@@ -22,9 +23,9 @@ beforeEach(() => {
 });
 afterEach(() => { rmSync(home, { recursive: true, force: true }); });
 
-it('orders inbox-acks after planner-tick and before order-notices and landed-sweep', () => {
+it('orders inbox-acks after planner-tick and before order-notices, landed-sweep and brief-send', () => {
   expect(SELF_TICK_STEP_ORDER).toEqual([
-    'reset-release', 'lane-autohold', 'planner-tick', 'inbox-acks', 'order-notices', 'landed-sweep',
+    'reset-release', 'lane-autohold', 'planner-tick', 'inbox-acks', 'order-notices', 'landed-sweep', 'brief-send',
   ]);
 });
 
