@@ -7,7 +7,7 @@ import {
 import type { ReleaseAdvanceOnceOptions, ReleaseAdvanceOnceReport } from '../core/fleet/release-advance-once.js';
 import type { GitRunner } from '../core/verse/git-ops.js';
 
-const USAGE = 'usage: ashlr fleet release-advance-batch --stdin [--apply] [--json]';
+const USAGE = 'usage: ashlr fleet release-advance-batch --stdin [--apply] [--json|--ndjson]';
 const HELP = `${USAGE}
 
 Submit a bounded list of release candidates through the existing serialized
@@ -25,8 +25,14 @@ flight; a blocked, refused, unavailable or busy entry does not stop the
 batch, so an unrelated repo can still advance. An accepted dispatch is a
 submission only: no release is published, installed or notified.
 
+--ndjson (not with --json) prints each candidate as it finishes, before the
+next one starts: {"version":1,"type":"entry","index":N,"total":M,"repo","tag",
+"result"} with a 1-based index, then one {"version":1,"type":"summary",
+"report"} line last. Invalid input prints one {"version":1,"outcome":"invalid"}
+line. A stdout failure stops the batch before the next candidate.
+
 exit: 0 every candidate planned|submitted|no-op|already-submitted,
-      1 any candidate blocked|refused|unavailable|busy,
+      1 any candidate blocked|refused|unavailable|busy, or output failed,
       2 invalid arguments or input`;
 
 interface BatchDeps {
@@ -66,6 +72,9 @@ const human = (report: ReleaseAdvanceBatchReport): string => {
   return lines.join('\n');
 };
 
+const entryLine = (index: number, total: number, result: ReleaseAdvanceOnceReport): string =>
+  JSON.stringify({ version: 1, type: 'entry', index, total, repo: result.repo, tag: result.tag, result });
+
 /**
  * Bounded batch driver over the serialized release advance. One JSON
  * document on stdin nominates 1..16 candidates; every rejection happens
@@ -74,7 +83,7 @@ const human = (report: ReleaseAdvanceBatchReport): string => {
  */
 export async function cmdFleetReleaseAdvanceBatch(args: string[], deps: BatchDeps = {}): Promise<number> {
   if (args.includes('--help') || args.includes('-h')) { console.log(HELP); return 0; }
-  const wantsJson = args.includes('--json');
+  const wantsJson = args.includes('--json') || args.includes('--ndjson');
   const invalid = (detail: string): number => {
     if (wantsJson) console.log(JSON.stringify({ version: 1, outcome: 'invalid', reason: detail }));
     else process.stderr.write(`Invalid input: ${detail}. ${USAGE}\n`);
@@ -83,13 +92,16 @@ export async function cmdFleetReleaseAdvanceBatch(args: string[], deps: BatchDep
   let stdin = false;
   let apply = false;
   let json = false;
+  let ndjson = false;
   for (const arg of args) {
     if (arg === '--stdin' && !stdin) { stdin = true; continue; }
     if (arg === '--apply' && !apply) { apply = true; continue; }
     if (arg === '--json' && !json) { json = true; continue; }
+    if (arg === '--ndjson' && !ndjson) { ndjson = true; continue; }
     return invalid('unexpected_argument');
   }
   if (!stdin) return invalid('missing_stdin_flag');
+  if (json && ndjson) return invalid('json_and_ndjson');
   const input = deps.input ?? process.stdin;
   if (deps.input === undefined && (input as { isTTY?: boolean }).isTTY === true) return invalid('stdin_must_be_a_pipe');
   let text: string;
@@ -97,14 +109,27 @@ export async function cmdFleetReleaseAdvanceBatch(args: string[], deps: BatchDep
   catch (error) { return invalid(error instanceof Error && error.message === 'input too large' ? 'input_too_large' : 'input_unreadable'); }
   const parsed = parseReleaseAdvanceBatchInput(text);
   if (!parsed.ok) return invalid(parsed.reason);
+  // Output errors are tracked apart from the core's candidate-list validation
+  // so a failed write is never reported as invalid input.
+  let outputFailed = false;
+  const write = (line: string): void => {
+    try { console.log(line); }
+    catch (error) { outputFailed = true; throw error; }
+  };
   let report: ReleaseAdvanceBatchReport;
   try {
     report = await runReleaseAdvanceBatch(parsed.candidates, {
       apply, runner: deps.gh, stateDir: deps.stateDir, advance: deps.advance, once: deps.once, now: deps.now,
+      onEntry: ndjson ? ({ index, total, report: result }) => write(entryLine(index, total, result)) : undefined,
     });
+    if (ndjson) write(JSON.stringify({ version: 1, type: 'summary', report }));
+    else write(json ? JSON.stringify(report) : human(report));
   } catch {
+    if (outputFailed) {
+      process.stderr.write('Output failed: batch stopped before the next candidate.\n');
+      return 1;
+    }
     return invalid('candidate_list');
   }
-  console.log(json ? JSON.stringify(report) : human(report));
   return report.unsuccessful === 0 ? 0 : 1;
 }

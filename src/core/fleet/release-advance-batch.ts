@@ -51,10 +51,24 @@ export interface ReleaseAdvanceBatchReport {
   entries: ReleaseAdvanceOnceReport[];
 }
 
+/** One finished candidate, handed to `onEntry` before the next one starts. */
+export interface ReleaseAdvanceBatchEntry {
+  /** 1-based position in input order. */
+  index: number;
+  total: number;
+  report: ReleaseAdvanceOnceReport;
+}
+
 export interface ReleaseAdvanceBatchOptions extends Omit<ReleaseAdvanceOnceOptions, 'apply'> {
   apply?: boolean;
   /** Test seam: defaults to advanceReleaseCandidateOnce. */
   once?: (repo: string, tag: string, opts: ReleaseAdvanceOnceOptions) => Promise<ReleaseAdvanceOnceReport>;
+  /**
+   * Awaited after each candidate's report, before the next candidate starts.
+   * An observer error is not converted into an entry: it rejects the batch
+   * and no later candidate is invoked.
+   */
+  onEntry?: (entry: ReleaseAdvanceBatchEntry) => void | Promise<void>;
 }
 
 const clean = (value: string): string =>
@@ -150,6 +164,7 @@ export async function runReleaseAdvanceBatch(
     }
     entries.push(report);
     counts[report.outcome] = (counts[report.outcome] ?? 0) + 1;
+    await opts.onEntry?.({ index: entries.length, total: candidates.length, report });
   }
   const succeeded = entries.filter(entry => SUCCESSFUL.has(entry.outcome)).length;
   return {
