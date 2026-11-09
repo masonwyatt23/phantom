@@ -1107,6 +1107,7 @@
 /test/schemas/fixtures/loop.v1.json @masonwyatt23
 /test/scrub-310.test.ts @masonwyatt23
 /test/scrub-corpus.test.ts @masonwyatt23
+/test/self-update-smoke-gate-04.test.ts @masonwyatt23
 /test/skill-library-wire-31.test.ts @masonwyatt23
 /test/spend-budget.test.ts @masonwyatt23
 /test/stale-git-locks.test.ts @masonwyatt23
