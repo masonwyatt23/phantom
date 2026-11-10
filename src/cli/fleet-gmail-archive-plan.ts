@@ -36,14 +36,15 @@ export async function cmdFleetGmailArchivePlan(args: string[]): Promise<number> 
   for (const m of messages) if (chosen.has(m.id)) counts.set(senderOf(m.from), (counts.get(senderOf(m.from)) ?? 0) + 1);
   const topSenders = [...counts].map(([sender, count]) => ({ sender, count }))
     .sort((a, b) => b.count - a.count || a.sender.localeCompare(b.sender)).slice(0, 3);
+  let persistence: 'saved' | 'failed' | 'skipped' = 'skipped';
   if (save) {
-    try { writeGmailArchivePlanLatest(runsDir, { inbox: inbox ?? basename(dir), unread: plan.unread, target: plan.target, archiveCount: chosen.size, topSenders }); }
-    catch { console.error('Could not save the archive plan.'); }
+    try { writeGmailArchivePlanLatest(runsDir, { inbox: inbox ?? basename(dir), unread: plan.unread, target: plan.target, archiveCount: chosen.size, topSenders }); persistence = 'saved'; }
+    catch { persistence = 'failed'; console.error('Could not save the archive plan.'); }
   }
-  if (json) console.log(JSON.stringify({ schema: 'fleet.gmail-archive-plan.v1', archivePlan: plan, topSenders }));
+  if (json) console.log(JSON.stringify({ schema: 'fleet.gmail-archive-plan.v1', archivePlan: plan, topSenders, persistence }));
   else {
     console.log(`Would archive ${chosen.size} of ${plan.unread} unread (target ${plan.target}). Archive only, nothing is deleted.`);
     for (const s of topSenders) console.log(`${s.count} from ${s.sender}`);
   }
-  return 0;
+  return persistence === 'failed' ? 1 : 0;
 }
