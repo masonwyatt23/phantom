@@ -57,7 +57,7 @@ describe('joining existing intent evidence', () => {
     expect(await readFile(intentLedgerPath(root), 'utf8')).toBe(persisted);
   });
 
-  it('deduplicates evidence and bounds rolling evidence and unique PRs without blocking upgrades', async () => {
+  it('refuses a join that would overflow PR or evidence capacity and keeps both directives', async () => {
     const first = item('first', 'RQ-FIRST-1');
     const second = item('second', 'RQ-SECOND-1');
     const other = item('other', 'RQ-OTHER-1');
@@ -68,12 +68,7 @@ describe('joining existing intent evidence', () => {
       { repo: 'example/project', number: 99, state: 'open' },
       { repo: 'EXAMPLE/project', number: 1, state: 'merged', url: 'https://example.test/user' },
     ];
-    await bridge(first, second, other);
-    const joined = (await readLedger(root)).items[0]!;
-    expect(joined.evidence).toHaveLength(MAX_EVIDENCE);
-    expect(joined.evidence).toEqual([...first.evidence.slice(1), second.evidence[1]]);
-    expect(joined.prs).toHaveLength(MAX_PRS);
-    expect(joined.prs[0]).toMatchObject({ state: 'merged', url: 'https://example.test/user' });
-    expect(joined.prs.some((pull) => pull.number === 99)).toBe(false);
+    await expect(bridge(first, second, other)).rejects.toThrow(/linked PRs/);
+    expect((await readLedger(root)).items).toEqual([first, second, other]);
   });
 });

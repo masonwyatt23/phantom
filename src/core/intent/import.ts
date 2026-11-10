@@ -31,7 +31,6 @@ import {
   validIntentId,
   type IntentItem,
   type IntentLedger,
-  type IntentProvenance,
   type IntentStatus,
 } from './schema.js';
 
@@ -165,11 +164,6 @@ async function nativeLedgerItems(path: string): Promise<IntentItem[] | null> {
   return parsed.items;
 }
 
-function addProvenance(item: IntentItem, row: IntentProvenance): void {
-  if (item.provenance.some((p) => p.source === row.source && p.date === row.date && p.verbatim === row.verbatim)) return;
-  item.provenance = [...item.provenance, row].slice(-MAX_PROVENANCE);
-}
-
 /** Never lowers a status; terminal states win, so an import cannot reopen work. */
 function preferStatus(current: IntentStatus, incoming: IntentStatus): IntentStatus {
   for (const terminal of ['verified', 'superseded', 'closed'] as const) {
@@ -182,23 +176,42 @@ function absorb(target: IntentItem, incoming: IntentItem, at: string): void {
   const before = JSON.stringify(target);
   const rq = [...new Set([...target.rq, ...incoming.rq])];
   if (rq.length > MAX_RQ) throw new IntentError(`An intent can track at most ${MAX_RQ} RQ keys.`);
-  target.rq = rq;
+  // Each collection is joined into a staged copy first. A join that would
+  // overflow a schema limit is refused outright, so neither side's unique
+  // rows are truncated or silently skipped; duplicates still merge in place.
+  const prs = target.prs.map((pull) => ({ ...pull }));
   for (const pull of incoming.prs) {
-    const existing = target.prs.find((row) => pullKey(row) === pullKey(pull));
+    const existing = prs.find((row) => pullKey(row) === pullKey(pull));
     if (existing) {
       if (pull.state === 'merged') existing.state = 'merged';
       if (pull.url && !existing.url) existing.url = pull.url;
-    } else if (target.prs.length < MAX_PRS) target.prs.push(pull);
+    } else prs.push({ ...pull });
   }
+  if (prs.length > MAX_PRS) {
+    throw new IntentError(`An intent can track at most ${MAX_PRS} linked PRs; the import was refused instead of dropping rows.`);
+  }
+  const evidence = [...target.evidence];
   for (const row of incoming.evidence) {
-    if (!target.evidence.some((entry) => entry.at === row.at && entry.kind === row.kind
-      && entry.ref === row.ref && entry.note === row.note)) {
-      target.evidence = [...target.evidence, row].slice(-MAX_EVIDENCE);
-    }
+    if (!evidence.some((entry) => entry.at === row.at && entry.kind === row.kind
+      && entry.ref === row.ref && entry.note === row.note)) evidence.push(row);
   }
+  if (evidence.length > MAX_EVIDENCE) {
+    throw new IntentError(`An intent can track at most ${MAX_EVIDENCE} evidence entries; the import was refused instead of dropping rows.`);
+  }
+  const provenance = [...target.provenance];
+  for (const row of incoming.provenance) {
+    if (!provenance.some((entry) => entry.source === row.source && entry.date === row.date
+      && entry.verbatim === row.verbatim)) provenance.push(row);
+  }
+  if (provenance.length > MAX_PROVENANCE) {
+    throw new IntentError(`An intent can track at most ${MAX_PROVENANCE} provenance entries; the import was refused instead of dropping rows.`);
+  }
+  target.rq = rq;
+  target.prs = prs;
+  target.evidence = evidence;
+  target.provenance = provenance;
   target.status = preferStatus(target.status, incoming.status);
   target.partial = target.partial || incoming.partial;
-  for (const row of incoming.provenance) addProvenance(target, row);
   if (Date.parse(incoming.lastTouchedAt) > Date.parse(target.lastTouchedAt)) target.lastTouchedAt = incoming.lastTouchedAt;
   // Repeating an identical import must not rewrite the record.
   if (JSON.stringify(target) !== before) target.updatedAt = at;
@@ -214,9 +227,13 @@ function place(ledger: IntentLedger, incoming: IntentItem, at: string): boolean 
   }
   const target = matches[0]!;
   absorb(target, incoming, at);
-  for (const extra of matches.slice(1)) {
-    absorb(target, extra, at);
-    ledger.items = ledger.items.filter((item) => item.id !== extra.id);
+  const extras = matches.slice(1);
+  // A refused absorb throws before any extra is detached, so a failed import
+  // cannot leave a matching directive removed while its rows were not merged.
+  for (const extra of extras) absorb(target, extra, at);
+  if (extras.length > 0) {
+    const absorbed = new Set(extras.map((item) => item.id));
+    ledger.items = ledger.items.filter((item) => !absorbed.has(item.id));
   }
   return true;
 }
