@@ -29,6 +29,7 @@ import {
   sameDirective,
   titleIsPartial,
   validIntentId,
+  type IntentEvidence,
   type IntentItem,
   type IntentLedger,
   type IntentProvenance,
@@ -165,6 +166,27 @@ async function nativeLedgerItems(path: string): Promise<IntentItem[] | null> {
   return parsed.items;
 }
 
+const evidenceKey = (row: IntentEvidence): string => JSON.stringify([row.at, row.kind, row.ref, row.note ?? null]);
+const provenanceKey = (row: IntentProvenance): string => JSON.stringify([row.source, row.date, row.verbatim]);
+
+/**
+ * Names the bound an absorb would cross, or null when the merge fits. Counts
+ * only rows the merge would actually add (deduped like the loops below), so
+ * replaying the same import never trips it.
+ */
+function absorbOverflow(target: IntentItem, incoming: IntentItem): string | null {
+  const pulls = new Set(target.prs.map(pullKey));
+  const addedPulls = new Set(incoming.prs.filter((pull) => !pulls.has(pullKey(pull))).map(pullKey));
+  if (target.prs.length + addedPulls.size > MAX_PRS) return `${MAX_PRS} pull links`;
+  const evidence = new Set(target.evidence.map(evidenceKey));
+  const addedEvidence = new Set(incoming.evidence.filter((row) => !evidence.has(evidenceKey(row))).map(evidenceKey));
+  if (target.evidence.length + addedEvidence.size > MAX_EVIDENCE) return `${MAX_EVIDENCE} evidence rows`;
+  const provenance = new Set(target.provenance.map(provenanceKey));
+  const addedProvenance = new Set(incoming.provenance.filter((row) => !provenance.has(provenanceKey(row))).map(provenanceKey));
+  if (target.provenance.length + addedProvenance.size > MAX_PROVENANCE) return `${MAX_PROVENANCE} provenance rows`;
+  return null;
+}
+
 function addProvenance(item: IntentItem, row: IntentProvenance): void {
   if (item.provenance.some((p) => p.source === row.source && p.date === row.date && p.verbatim === row.verbatim)) return;
   item.provenance = [...item.provenance, row].slice(-MAX_PROVENANCE);
@@ -213,6 +235,13 @@ function place(ledger: IntentLedger, incoming: IntentItem, at: string): boolean 
     return false;
   }
   const target = matches[0]!;
+  // The imported item must merge losslessly; refusing beats silently dropping
+  // retained rows. The ledger is written once at the end, so rejecting here
+  // leaves the persisted bytes untouched.
+  const overflow = absorbOverflow(target, incoming);
+  if (overflow !== null) {
+    throw new IntentError(`Merging imported item would exceed the ${overflow} limit. Nothing was imported; the ledger was left unchanged.`);
+  }
   absorb(target, incoming, at);
   for (const extra of matches.slice(1)) {
     absorb(target, extra, at);
