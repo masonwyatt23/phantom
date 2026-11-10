@@ -43,6 +43,11 @@ export async function cmdNodePool(verb: string, args: string[]): Promise<number>
       const f = flags(args, [...(verb === 'pool' ? ['--role'] : []), '--node', '--owner', '--primary', '--backup']);
       const role = verb === 'join' ? 'worker' : f.get('--role') as PoolConfig['role'];
       const existing = verb === 'join' ? readPoolConfig() : null;
+      // Bare `phm node join` on a machine with no pool config joins the local
+      // router instead, where join flags default to hostname, gh login, lanes.
+      if (verb === 'join' && !existing && !hasNodePool() && !f.has('--primary') && args.every(a => a === '--json')) {
+        return (await import('./node-fleet.js')).cmdNodeFleet('join', args);
+      }
       const config = existing ?? configFrom(f, role);
       if (!existing && verb === 'join' && !f.has('--node')) config.node = hostname().replace(/[^a-zA-Z0-9_.-]/g, '-').slice(0, 100);
       if (existing && ['--role', '--node', '--owner', '--primary', '--backup'].some(key => f.has(key) && f.get(key) !== existing[key.slice(2) as keyof PoolConfig])) throw new Error('Join cannot change pool identity');

@@ -1,12 +1,38 @@
 /** `phm node join|beat|enqueue|plan|pull|renew|complete|status|leave`: thin handlers over DriveNodes. */
 import type { NodesStore } from '../core/drive/nodes/index.js';
 import { UsageError, parseNodeFleetFlags, runNodeFleet } from '../core/drive/nodes/commands.js';
+import type { JoinDefaultsDeps } from '../core/drive/nodes/join-defaults.js';
 import type { NodeAuth } from '../core/drive/nodes/state.js';
 
 export interface NodeFleetDeps {
   store?: NodesStore;
   now?: () => number;
   probeAuth?: () => NodeAuth;
+  joinDefaults?: JoinDefaultsDeps;
+}
+
+function hasFlag(args: string[], name: string): boolean {
+  return args.some(a => a === name || a.startsWith(`${name}=`));
+}
+
+/** Fill absent join flags from this machine's own identity (hostname, gh login,
+ * detected lanes). Explicit flags always win; the SSH pool path never sees these. */
+async function withJoinDefaults(args: string[], deps: NodeFleetDeps): Promise<string[]> {
+  const wanted = { node: !hasFlag(args, '--node'), owner: !hasFlag(args, '--owner'), caps: !hasFlag(args, '--caps') };
+  if (!wanted.node && !wanted.owner && !wanted.caps) return args;
+  const { joinDefaults } = await import('../core/drive/nodes/join-defaults.js');
+  const d = joinDefaults(wanted, deps.joinDefaults);
+  const extra: string[] = [];
+  if (wanted.node && d.node !== undefined) extra.push('--node', d.node);
+  if (wanted.owner && d.owners !== undefined) extra.push('--owner', d.owners.join(','));
+  if (wanted.caps && d.caps !== undefined && d.caps.length) extra.push('--caps', d.caps.join(','));
+  const out = [...args, ...extra];
+  if (wanted.owner && d.owners === undefined) {
+    throw new UsageError('missing-owner',
+      '--owner is required: pass --owner <scope>, or run `gh auth login` so join defaults to person:<your gh login>.',
+      'Run: gh auth login, or pass --owner <scope>. Run: phm node --help');
+  }
+  return out;
 }
 
 
@@ -27,12 +53,17 @@ function text(verb: string, out: Record<string, unknown>): string {
 export async function cmdNodeFleet(verb: string, args: string[], deps: NodeFleetDeps = {}): Promise<number> {
   let json = false;
   try {
-    const flags = parseNodeFleetFlags(verb, args);
-    json = flags.has('--json');
+    parseNodeFleetFlags(verb, args);
     if (!deps.store) {
       const { cmdNodePool, hasNodePool } = await import('./node-pool.js');
       if (hasNodePool()) return cmdNodePool(verb, args);
     }
+    // Local router only: join flags the caller omitted take this machine's own
+    // defaults (hostname, gh login, detected lanes). The pool path above keeps
+    // the raw args so its --caps/--slots routing rule is unchanged.
+    const effective = verb === 'join' ? await withJoinDefaults(args, deps) : args;
+    const flags = parseNodeFleetFlags(verb, effective);
+    json = flags.has('--json');
     // Parsing happens first and the store modules load after it, so a usage error never touches (or creates) state.
     const [{ DriveNodes, LocalNodesStore }, { probeLocalAuth }, { ashlrHome }, { privateDirectory }, { join }] = await Promise.all([
       import('../core/drive/nodes/index.js'), import('../core/drive/nodes/auth-probe.js'),

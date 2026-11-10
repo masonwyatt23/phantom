@@ -34,6 +34,8 @@ runs on two nodes.
 ```sh
 # On each computer (the box coordinator included):
 phm node join --node box --owner acme --caps build,gh --json   # prints a session number
+# or let the machine name itself: `phm node join --json` defaults --node to the
+# hostname, --owner to person:<your gh login>, and --caps to detected lanes.
 phm node beat --node box --session 1 --usage 120 --probe-auth --json
 
 # Anyone in the owner scope queues work:

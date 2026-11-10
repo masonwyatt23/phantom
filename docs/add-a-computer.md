@@ -7,7 +7,17 @@ npm install -g @ashlr/phantom
 ```
 
 Join with a unique node ID and the owner scope used by the jobs you want to
-run. Choose capabilities for this computer's role (see below):
+run. Choose capabilities for this computer's role (see below). Every flag has
+a default, so the shortest join is:
+
+```sh
+phm node join --json
+```
+
+`--node` falls back to this computer's hostname, `--owner` to
+`person:<your gh login>` (run `gh auth login` first; the login name is read
+from your own gh session, never a token), and `--caps` to the lanes this
+machine detects. To name them yourself:
 
 ```sh
 phm node join --node laptop --owner acme --caps build,gh --json
