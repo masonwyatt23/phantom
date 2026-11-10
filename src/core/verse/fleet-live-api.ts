@@ -63,6 +63,7 @@
 import { constants as fsConstants } from 'node:fs';
 import { lstat, open, opendir } from 'node:fs/promises';
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { homedir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 
 import type { ApiModule } from './api-modules.js';
@@ -101,6 +102,7 @@ import { listRepoHolds, setRepoHold } from '../fleet/quarantine.js';
 import { listPostMergeWatches, type PostMergeWatchView } from '../fleet/post-merge-watch.js';
 import { listTasks, type TaskQueueRead } from '../fleet/task-source.js';
 import { readJournalSince, readTickState, type FleetJournalRecord, type FleetTickStateV1 } from '../fleet/fleet-runtime-journal.js';
+import { DISPATCHD_LANE, readLaneCapacity, type LaneCapacityRead } from '../fleet/lane-capacity-read.js';
 import { fleetLaneOf } from '../fleet/dispatch-router.js';
 import { openFleetPrsFromLedger } from '../fleet/backpressure.js';
 import { repoIdentityOfPath } from '../fleet/repo-identity.js';
@@ -188,6 +190,13 @@ export interface FleetLiveDeps {
    * Default: fleet/fleet-truth.ts, the same source the Telegram brief and pulse read.
    */
   fleetTruth?(sinceMs: number, nowMs: number): Promise<import('../fleet/fleet-truth.js').FleetTruth>;
+  /**
+   * dispatchd's own lane-capacity read (<runsDir>/queue/status.json) — the
+   * observation that stands in for a stale standing tick so the lane chips
+   * can show real running-of-target instead of "capacity unknown".
+   * Default: fleet/lane-capacity-read.ts over the fleet runs dir.
+   */
+  laneCapacity?(nowMs: number): Promise<LaneCapacityRead | null>;
 }
 
 // ---------------------------------------------------------------------------
@@ -620,6 +629,8 @@ function defaultDeps(): FleetLiveDeps {
     repoIdentity: (path) => repoIdentityOfPath(path),
     watches: () => listPostMergeWatches(),
     dispatchStarts: (sinceMs) => dispatchStartTail.started(sinceMs),
+    laneCapacity: (nowMs) =>
+      readLaneCapacity(process.env.ASHLR_RUNS_DIR ?? join(homedir(), '.ashlr-runs'), nowMs).catch(() => null),
   };
 }
 
@@ -917,6 +928,55 @@ export function fleetDarkSince(state: FleetLiveState, lastActivityAt: string | n
 function asSentence(text: string): string {
   const t = text.trim();
   return t === '' || /[.!?]$/.test(t) ? t : `${t}.`;
+}
+
+/**
+ * Lane rows for a stale standing tick. dispatchd's status write is an
+ * independent observation of the same fleet: while it is fresh each chip
+ * shows real running-of-target (and a held lane its held reason) instead of
+ * "capacity unknown". Only a missing, unreadable or >10-minute-old write
+ * keeps the unobserved reason — the exact string the chip's runs-dir
+ * fallback and `phm fleet lane-slots` key on. A stopped fleet keeps its
+ * state reason; dispatchd capacity is never read on that path.
+ */
+async function staleTickLanes(
+  d: FleetLiveDeps,
+  nowMs: number,
+  state: FleetLiveState,
+  stateReason: string | null,
+  busy: Partial<Record<FleetEngine, number>>,
+): Promise<FleetLaneState[]> {
+  const stopped = state === 'dark' || state === 'stopped' || state === 'paused';
+  let capacity: LaneCapacityRead | null = null;
+  if (!stopped && d.laneCapacity) {
+    try { capacity = await d.laneCapacity(nowMs); } catch { capacity = null; }
+  }
+  const observed = capacity !== null && !capacity.stale
+    ? new Map(capacity.lanes.map((l) => [l.lane, l]))
+    : null;
+  return FLEET_ENGINES.map((lane) => {
+    const found = observed?.get(DISPATCHD_LANE[lane]);
+    if (found) {
+      return {
+        lane,
+        slots: found.target,
+        busy: found.running,
+        capReason: found.held
+          ? `Held by the dispatcher${found.heldReason !== null ? `: ${found.heldReason.replace(/[\s.]+$/, '')}` : ''}.`
+          : null,
+      };
+    }
+    return {
+      lane,
+      slots: 0,
+      busy: busy[lane] ?? 0,
+      capReason: stopped
+        ? stateReason ?? 'The fleet is not running.'
+        : observed === null
+          ? 'No standing tick has reported lanes in the last 10 minutes.'
+          : 'Dispatchd did not report this lane in its last status write.',
+    };
+  });
 }
 
 /** Build the snapshot and the Needs-you items from every source. Never throws. */
@@ -1379,14 +1439,7 @@ export async function buildFleetLiveSnapshot(d: FleetLiveDeps = deps): Promise<B
   const standingTickFresh = tick !== null && tick.standing !== null && nowMs >= msOf(tick.at) && nowMs - msOf(tick.at) <= 10 * 60_000;
   const lanes: FleetLaneState[] = standingTickFresh
     ? tick.lanes.map((lane) => ({ ...lane, busy: busy[lane.lane] ?? 0 }))
-    : FLEET_ENGINES.map((lane) => ({
-        lane,
-        slots: 0,
-        busy: busy[lane] ?? 0,
-        capReason: state === 'dark' || state === 'stopped' || state === 'paused'
-          ? stateReason ?? 'The fleet is not running.'
-          : 'No standing tick has reported lanes in the last 10 minutes.',
-      }));
+    : await staleTickLanes(d, nowMs, state, stateReason, busy);
 
   // ── Funnel ──────────────────────────────────────────────────────────────
   const funnel = rows ? gateFunnelFromLedger(rows, since7d, nowMs) : null;
