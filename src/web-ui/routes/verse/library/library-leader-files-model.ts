@@ -13,8 +13,8 @@ export interface LeaderFileRow { key: string; label: string; age: string; size: 
 
 const record = (x: unknown): x is Record<string, unknown> => typeof x === 'object' && x !== null && !Array.isArray(x);
 const isTime = (x: unknown): x is string => typeof x === 'string' && Number.isFinite(Date.parse(x));
-// Names are relative to the leader directory: a top-level file or drafts/<file>; never a path.
-const SAFE_NAME = /^(?:[^/\\\0]+|drafts\/[^/\\\0]+)$/;
+// Names are relative to the leader directory: a top-level file, drafts/<file>, or inbound/<file>; never a path.
+const SAFE_NAME = /^(?:[^/\\\0]+|(?:drafts|inbound)\/[^/\\\0]+)$/;
 
 function validFile(row: unknown): row is LeaderFile {
   return record(row) && typeof row.name === 'string' && SAFE_NAME.test(row.name) && row.name !== '..'
@@ -34,7 +34,8 @@ export function leaderFileLabel(name: string): string {
     case 'VISION.md': return 'Vision';
     case 'PLAN-LOG.md': return 'Plan log';
     case 'INSPIRATION.md': return 'Inspiration';
-    default: return `Draft: ${name.replace(/^drafts\//, '').replace(/\.md$/, '')}`;
+    default: if (name.startsWith('inbound/')) return `Inbound: ${name.slice('inbound/'.length).replace(/\.md$/, '')}`;
+      return `Draft: ${name.replace(/^drafts\//, '').replace(/\.md$/, '')}`;
   }
 }
 

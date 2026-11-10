@@ -14,7 +14,7 @@ export interface LibraryFile {
 // Read complete, bounded files before redaction: cutting a token at a byte
 // boundary before scrubbing could expose a secret-shaped prefix.
 const MAX_BYTES = 256 * 1024;
-const MAX_DRAFTS = 200;
+const MAX_DIRECTORY_FILES = 200;
 
 export async function listLeaderFiles(root = join(homedir(), '.ashlr-runs')): Promise<LibraryFile[]> {
   const leader = join(root, 'leader');
@@ -22,14 +22,16 @@ export async function listLeaderFiles(root = join(homedir(), '.ashlr-runs')): Pr
     if (!(await lstat(root)).isDirectory() || !(await lstat(leader)).isDirectory()) return [];
   } catch { return []; }
   const names = ['VISION.md', 'PLAN-LOG.md', 'INSPIRATION.md'];
-  const drafts = join(leader, 'drafts');
-  try {
-    if ((await lstat(drafts)).isDirectory()) {
-      const entries = await readdir(drafts, { withFileTypes: true });
-      names.push(...entries.filter(entry => entry.isFile() && entry.name.endsWith('.md'))
-        .map(entry => `drafts/${entry.name}`).sort().slice(0, MAX_DRAFTS));
-    }
-  } catch { /* An absent drafts directory is normal. */ }
+  for (const directory of ['drafts', 'inbound']) {
+    try {
+      const path = join(leader, directory);
+      if ((await lstat(path)).isDirectory()) {
+        const entries = await readdir(path, { withFileTypes: true });
+        names.push(...entries.filter(entry => entry.isFile() && entry.name.endsWith('.md'))
+          .map(entry => `${directory}/${entry.name}`).sort().slice(0, MAX_DIRECTORY_FILES));
+      }
+    } catch { /* An absent directory is normal. */ }
+  }
   const rows = await Promise.all(names.map(async name => {
     let file;
     try {
