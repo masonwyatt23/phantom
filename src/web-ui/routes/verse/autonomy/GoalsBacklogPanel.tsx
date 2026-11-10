@@ -8,11 +8,16 @@ import { formatProductDisplayText } from '../../../../core/vision/leader-display
  * returns `null` when no backlog has been built, which is "not yet", not an
  * error, and renders as such.
  */
-import { useId, useState } from 'react';
+import { useId, useMemo, useState } from 'react';
 import { SkeletonRow } from '../../../components/primitives/Skeleton.js';
 import { useQuery } from '../../../data/hooks.js';
-import { verseBacklogQuery, verseGoalsQuery } from './control-queries.js';
-import { formatWholePercent, repoDisplayName, UNKNOWN } from './format.js';
+import { fleetLiveQuery } from '../command/surface-data.js';
+import { mergeBacklogQuery } from '../fleet-merges/merge-backlog-queries.js';
+import { opsReleasesQuery } from '../fleet-releases/fleet-releases-queries.js';
+import { APP_VERSION, installedDesktopVersion } from '../sections/app-version.js';
+import { releaseStagesQuery, verseBacklogQuery, verseGoalsQuery } from './control-queries.js';
+import { formatRelative, formatWholePercent, repoDisplayName, UNKNOWN } from './format.js';
+import { goalsMetrics, metricReadOf, optionalMetricReadOf } from './goals-metrics.js';
 import styles from './autonomy.module.css';
 
 const MAX_ROWS = 8;
@@ -20,10 +25,25 @@ const MAX_ROWS = 8;
 export function GoalsBacklogPanel() {
   const goals = useQuery(verseGoalsQuery);
   const backlog = useQuery(verseBacklogQuery);
+  const live = useQuery(fleetLiveQuery);
+  const mergeBacklog = useQuery(mergeBacklogQuery);
+  const releases = useQuery(opsReleasesQuery);
+  const stages = useQuery(releaseStagesQuery);
   const [goalsExpanded, setGoalsExpanded] = useState(false);
   const [backlogExpanded, setBacklogExpanded] = useState(false);
   const goalsListId = useId();
   const backlogListId = useId();
+
+  const metrics = useMemo(
+    () => goalsMetrics({
+      live: optionalMetricReadOf(live),
+      backlog: metricReadOf(mergeBacklog),
+      releases: metricReadOf(releases, 'This build has no ops/releases route.'),
+      stages: metricReadOf(stages, 'This build has no release/stages route.'),
+      installedVersion: installedDesktopVersion() ?? APP_VERSION,
+    }),
+    [live, mergeBacklog, releases, stages],
+  );
 
   const openGoals = (goals.data ?? []).filter((g) => g.status !== 'done' && g.status !== 'archived');
   const activeCount = openGoals.filter((g) => g.status === 'active').length;
@@ -36,6 +56,24 @@ export function GoalsBacklogPanel() {
       <div className={styles.panelHead}>
         <h3 className={styles.panelTitle}>Goals and backlog</h3>
         <p className={styles.panelNote}>Read-only in this view.</p>
+      </div>
+
+      <div className={styles.facts} role="list" aria-label="Live metrics">
+        {metrics.map((row) => (
+          <div className={styles.fact} key={row.id} role="listitem">
+            <span className={styles.factLabel}>{row.label}</span>
+            <span className={styles.factValue} data-tone={row.value === null ? 'unknown' : undefined}>
+              {row.value ?? 'unknown'}
+            </span>
+            <span className={styles.panelNote}>
+              {row.value === null ? row.unknownReason : row.detail}
+            </span>
+            <span className={styles.panelNote}>
+              {row.source} · {row.asOf ? `as of ${formatRelative(row.asOf)}` : 'as-of time unknown'}
+              {row.stale ? ' · stale' : ''}
+            </span>
+          </div>
+        ))}
       </div>
 
       <div className={styles.summaryColumns}>

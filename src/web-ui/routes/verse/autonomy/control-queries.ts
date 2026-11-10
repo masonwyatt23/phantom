@@ -26,7 +26,8 @@
 import { VERSE_AUDIT_MAX_LIMIT } from './control-types.js';
 import type { GoalSummary, QueryDef } from '../../../data/queries.js';
 import { getMutationToken, touchMutationHold } from '../../../data/auth-store.js';
-import { apiGet, apiPost } from '../../../data/client.js';
+import { ApiError, apiGet, apiPost } from '../../../data/client.js';
+import { narrowReleaseStages, type ReleaseStagesRead } from './goals-metrics.js';
 import { invalidate } from '../../../data/cache.js';
 import { pauseFleet, resumeFleet } from '../../../data/mutations.js';
 import type {
@@ -131,6 +132,26 @@ export function normalizeBacklog(raw: unknown): VerseBacklogSummary {
 export const verseBacklogQuery: QueryDef<VerseBacklogSummary> = {
   key: 'backlog',
   fetch: (signal) => apiGet<unknown>('/api/backlog', signal).then(normalizeBacklog),
+};
+
+/**
+ * `GET /api/verse/release/stages` — the newest published Phantom release and
+ * whether its desktop assets are verified. A 404 (route absent on an older
+ * build) resolves to null, the same "no source" answer `opsReleasesQuery`
+ * gives, and the Goals metrics strip reads it as unknown.
+ */
+export const releaseStagesQuery: QueryDef<ReleaseStagesRead | null> = {
+  key: 'verse-release-stages',
+  fetch: async (signal) => {
+    try {
+      const view = narrowReleaseStages(await apiGet<unknown>('/api/verse/release/stages', signal));
+      if (view === null) throw new Error('Invalid release-stages response.');
+      return view;
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 404) return null;
+      throw error;
+    }
+  },
 };
 
 // ---------------------------------------------------------------------------

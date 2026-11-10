@@ -268,7 +268,8 @@ describe('GoalsBacklogPanel disclosures', () => {
     expect(expand).toHaveAttribute('aria-expanded', 'false');
     expect(list.children).toHaveLength(8);
     expect(JSON.stringify(goals)).toBe(original);
-    expect(fetcher).not.toHaveBeenCalled();
+    // The metrics strip's four reads may fetch once; the seeded goals/backlog keys never refetch.
+    expect(fetcher.mock.calls.map((c) => String(c[0])).filter((url) => url === '/api/goals' || url === '/api/backlog')).toEqual([]);
   });
 
   it('expands and collapses backlog independently, retaining the full queue order', async () => {
@@ -284,7 +285,8 @@ describe('GoalsBacklogPanel disclosures', () => {
     expect(screen.getByRole('button', { name: 'Expand all goals (10)' })).toHaveAttribute('aria-expanded', 'false');
     await user.click(collapse);
     expect(list.children).toHaveLength(8);
-    expect(fetcher).not.toHaveBeenCalled();
+    // The metrics strip's four reads may fetch once; the seeded goals/backlog keys never refetch.
+    expect(fetcher.mock.calls.map((c) => String(c[0])).filter((url) => url === '/api/goals' || url === '/api/backlog')).toEqual([]);
   });
 
   it('keeps expansion across read updates without selecting or rewriting a goal', async () => {
@@ -308,7 +310,10 @@ describe('GoalsBacklogPanel disclosures', () => {
 
   it('does not present failed reads as zero goals or an empty queue', async () => {
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
-      throw new Error(input.toString() === '/api/goals' ? 'Goal source unavailable' : 'Backlog source unavailable');
+      const url = input.toString();
+      if (url === '/api/goals') throw new Error('Goal source unavailable');
+      if (url === '/api/backlog') throw new Error('Backlog source unavailable');
+      return new Response('not found', { status: 404 });
     }));
     render(<GoalsBacklogPanel />);
     expect(await screen.findByText('Goal source unavailable')).toHaveAttribute('role', 'alert');
