@@ -245,7 +245,7 @@ describe('M30 CI workflow', () => {
     expect(permissionJobs).toEqual([
       ['release-build', { contents: 'read', actions: 'read' }],
     ]);
-    expect(ciYml).toContain("concurrency:\n  group: ci-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('run-{0}', github.run_id) }}\n  cancel-in-progress: ${{ github.event_name == 'pull_request' }}");
+    expect(ciYml).toContain("concurrency:\n  group: ${{ github.event_name == 'workflow_dispatch' && inputs.release_gate && format('phantom-release-{0}', github.sha) || format('ci-{0}', github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('run-{0}', github.run_id)) }}\n  cancel-in-progress: ${{ github.event_name == 'pull_request' }}");
     // Master pushes run the seconds-fast gate only so the required Merge Gate
     // exists on the exact commit for auto-tag; full suites stay daily.
     expect(ciYml).toMatch(/^ {2}push:\n {4}branches: \[master\]$/m);
