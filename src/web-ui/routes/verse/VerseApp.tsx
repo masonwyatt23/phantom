@@ -1,3 +1,4 @@
+import { UpdatedNotice } from './shell/UpdatedNotice.js';
 /**
  * routes/verse/VerseApp.tsx — the Verse 3.10 workbench shell (unit C1;
  * SPEC-310C §1, SPEC-310B §6).
@@ -652,6 +653,7 @@ export function VerseApp() {
         one is visible.
       */}
       <main className={styles.section} data-section={ui.section} id="main-content" tabIndex={-1}>
+        <UpdatedNotice />
         <div className={styles.workModes}>
         <nav className={styles.workModeChoices} aria-label="How you work">
           {WORK_MODES.map((mode) => (
