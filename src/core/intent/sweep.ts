@@ -8,6 +8,8 @@ export interface SweepRow {
   action: 'requeue' | 'propose-superseded' | 'await-verification';
 }
 
+const sweepNote = 'Local stale tracking refreshed; no job dispatched.';
+
 const terminal = new Set<IntentStatus>(['shipped', 'verified', 'closed', 'superseded']);
 
 function actionFor(item: IntentItem): SweepRow['action'] {
@@ -28,10 +30,17 @@ export async function sweepStale(opts: { root?: string; apply?: boolean; now?: s
   const items = ledger.items.filter(item => !terminal.has(item.status) && now - Date.parse(item.lastTouchedAt) > item.staleAfterMs);
   const actions = items.map(actionFor);
   if (opts.apply) {
+    const needsEvidence = items.map((item, index) => !item.evidence.some(row =>
+      row.kind === 'sweep' && row.ref === actions[index] && row.note === sweepNote));
+    for (const [index, item] of items.entries()) {
+      if (needsEvidence[index] && item.evidence.length >= MAX_EVIDENCE) {
+        throw new IntentError(`Directive ${item.id} has reached evidence capacity (${MAX_EVIDENCE}); sweep cannot retain its recommendation.`);
+      }
+    }
     for (const [index, item] of items.entries()) {
       const action = actions[index]!;
       if (action === 'requeue') item.status = 'queued';
-      item.evidence = [...item.evidence, { at, kind: 'sweep' as const, ref: action, note: 'Local stale tracking refreshed; no job dispatched.' }].slice(-MAX_EVIDENCE);
+      if (needsEvidence[index]) item.evidence.push({ at, kind: 'sweep', ref: action, note: sweepNote });
       item.lastTouchedAt = at;
       item.updatedAt = at;
     }
