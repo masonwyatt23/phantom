@@ -23,6 +23,8 @@ import { readStableRegularFile } from '../util/stable-file-read.js';
 import { fsyncDirectory } from '../util/durability.js';
 import { writePrivateFileAtomically } from '../util/private-file-write.js';
 import { ensurePrivateDirectory } from '../verse/preferences.js';
+import { readTeammateTexts, type TeammateText } from './imessage-teammate-inbox.js';
+import { emptyOwnerSettings } from './owner-channel.js';
 import {
   OWNER_THREAD_CLAIM_KEY,
   OWNER_THREAD_ID,
@@ -47,6 +49,32 @@ import {
 const MAX_MESSAGES = 2_000;
 const MAX_BYTES = 1_048_576;
 const KEY = /^[A-Za-z0-9._:-]{8,80}$/;
+
+export function findOverdueTeammateTexts(pending: readonly TeammateText[], opts: { now: number; thresholdMs?: number }): TeammateText[] {
+  return pending.filter(t => opts.now - Date.parse(t.at) > (opts.thresholdMs ?? 5 * 60_000))
+    .sort((a, b) => Date.parse(a.at) - Date.parse(b.at) || a.rowid - b.rowid);
+}
+
+/** Raise local notices without copying message contents or invoking a transport. */
+export async function noticeOverdueTeammateTexts(opts: { runsDir: string; now?: () => number; apply?: boolean }): Promise<{ state: 'ok' | 'unavailable'; raised: number; skipped: number }> {
+  let raised = 0, skipped = 0;
+  try {
+    const now = (opts.now ?? Date.now)();
+    const inbox = readTeammateTexts({ runsDir: opts.runsDir, now: () => now });
+    if (inbox.sourceState !== 'healthy') return { state: 'unavailable', raised, skipped };
+    for (const message of findOverdueTeammateTexts(inbox.texts, { now })) {
+      if (!opts.apply) { skipped++; continue; }
+      const key = `teammate-overdue-${message.rowid}`;
+      const result = await transaction({ runsDir: opts.runsDir, now: () => now, settings: emptyOwnerSettings() }, async state => {
+        if (state.archivedKeys?.includes(keyDigest(key)) || state.messages.some(m => m.idempotencyKey === key)) return 'duplicate';
+        appendMessage(state, { idempotencyKey: key, channel: 'imessage', senderId: 'leader', direction: 'outbound', at: new Date(now).toISOString(), text: `A teammate message has awaited a reply for ${Math.floor((now - Date.parse(message.at)) / 60_000)} minutes.` });
+        return 'accepted';
+      });
+      if (result === 'accepted') raised++; else skipped++;
+    }
+    return { state: 'ok', raised, skipped };
+  } catch { return { state: 'unavailable', raised, skipped }; }
+}
 
 export interface OwnerThreadMessage {
   seq: number;
