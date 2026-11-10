@@ -3,11 +3,16 @@
  * view of the ranked backlog (`GET /api/backlog`, via the same query the
  * Autonomy panel uses), grouped by repo, each row saying where it came from.
  * Each row can be sent to the Leader as "Do next" / "Not now" (IdeaSteer).
+ * Goal-drift rows name the live goal objective (`GET /api/goals`), and a
+ * Goal filter narrows the list to one open goal's ideas.
  * Backlog text is untrusted, so it renders as plain text only.
  */
 import { Fragment, useId, useMemo, useState } from 'react';
 import { openDockPane } from '../dock/dock-store.js';
 import { useQuery, useRefetch } from '../../../data/hooks.js';
+import { goalsQuery, type GoalSummary } from '../../../data/queries.js';
+import { openGoals } from '../goals-pane/goals-pane-model.js';
+import { filterIdeasByGoal, goalChipText, ideaGoalId } from './idea-goal-link.js';
 import { Card, CardNote } from '../command/Surface.js';
 import { verseBacklogQuery } from '../autonomy/control-queries.js';
 import { usePollWhileVisible } from '../shell/section-visibility.js';
@@ -20,11 +25,19 @@ const PER_REPO = 5;
 
 export function IdeasPane({ visible = true }: { visible?: boolean }) {
   const backlog = useQuery(verseBacklogQuery, { enabled: visible, freshMs: IDEAS_POLL_MS });
+  const goals = useQuery(goalsQuery, { enabled: visible });
+  const [goalChoice, setGoalChoice] = useState('all');
   const refetch = useRefetch(verseBacklogQuery);
   usePollWhileVisible(() => { refetch(); }, IDEAS_POLL_MS, { enabled: visible });
   const [open, setOpen] = useState<ReadonlySet<string>>(new Set());
 
-  const rows = useMemo(() => rankIdeas(backlog.data?.items ?? []), [backlog.data]);
+  const goalList = goals.data ?? [];
+  const goalOptions = useMemo(() => openGoals(goals.data ?? []), [goals.data]);
+  // A goal that closes (or vanishes) while selected drops the filter back to
+  // All instead of stranding the pane on "No ideas for this goal".
+  const goalFilter = goalOptions.some(goal => goal.id === goalChoice) ? goalChoice : 'all';
+  const allRows = useMemo(() => rankIdeas(backlog.data?.items ?? []), [backlog.data]);
+  const rows = useMemo(() => filterIdeasByGoal(allRows, goalFilter), [allRows, goalFilter]);
   const full = useMemo(() => groupByRepo(rows, Number.MAX_SAFE_INTEGER), [rows]);
   const groups = useMemo(() => groupByRepo(rows, PER_REPO), [rows]);
   const { counts, nudge } = useMemo(() => sourceCounts(rows), [rows]);
@@ -42,8 +55,10 @@ export function IdeasPane({ visible = true }: { visible?: boolean }) {
     body = <CardNote>Loading ideas…</CardNote>;
   } else if (backlog.data.absent) {
     body = <CardNote>No backlog has been built yet. Run <code>ashlr backlog</code> or one tick from Controls.</CardNote>;
-  } else if (rows.length === 0) {
+  } else if (allRows.length === 0) {
     body = <CardNote>The backlog is empty, so a tick idles. Enroll another repository in Scope, or add a goal, to give it work.</CardNote>;
+  } else if (rows.length === 0) {
+    body = <CardNote>No ideas for this goal.</CardNote>;
   } else {
     body = <>
       <p className={styles.headline}>{ideasHeadline(rows)}</p>
@@ -52,15 +67,21 @@ export function IdeasPane({ visible = true }: { visible?: boolean }) {
         {counts.map(({ source, count }, i) => <Fragment key={source}>{i ? ' · ' : ''}{source} {count}</Fragment>)}
       </p>
       <div className={styles.groups}>
-        {groups.map((group, i) => <RepoCard key={group.repo} group={group} all={full[i]!} expanded={open.has(group.repo)} onToggle={() => toggle(group.repo)} />)}
+        {groups.map((group, i) => <RepoCard key={group.repo} group={group} all={full[i]!} goals={goalList} expanded={open.has(group.repo)} onToggle={() => toggle(group.repo)} />)}
       </div>
     </>;
   }
 
-  return <div className={styles.root} aria-label="Ideas">{body}</div>;
+  return <div className={styles.root} aria-label="Ideas">
+    {goalOptions.length > 0 ? <label className={styles.sources}>Goal: <select value={goalFilter} onChange={event => setGoalChoice(event.target.value)}>
+      <option value="all">All</option>
+      {goalOptions.map(goal => <option key={goal.id} value={goal.id}>{goal.objective}</option>)}
+    </select></label> : null}
+    {body}
+  </div>;
 }
 
-function RepoCard({ group, all, expanded, onToggle }: { group: RepoGroup; all: RepoGroup; expanded: boolean; onToggle: () => void }) {
+function RepoCard({ group, all, goals, expanded, onToggle }: { group: RepoGroup; all: RepoGroup; goals: readonly GoalSummary[]; expanded: boolean; onToggle: () => void }) {
   const listId = useId();
   const shown = expanded ? all.rows : group.rows;
   return (
@@ -69,7 +90,7 @@ function RepoCard({ group, all, expanded, onToggle }: { group: RepoGroup; all: R
         {shown.map(row => <li key={row.key} className={styles.row}>
           <span className={styles.title}>{row.title}</span>
           <span className={styles.meta}>{row.scoreText} · {row.source}</span>
-          {row.goal ? <button type="button" className={styles.toggle} onClick={() => openDockPane('goals')}>from goal: {row.goal.name}</button> : null}
+          {row.goal ? <button type="button" className={styles.toggle} onClick={() => openDockPane('goals')}>{goalChipText(ideaGoalId(row), goals, row.goal.name)}</button> : null}
           <IdeaSteer idea={row} repo={group.repo} />
         </li>)}
       </ol>
