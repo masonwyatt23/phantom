@@ -7,6 +7,7 @@
  * iMessage bodies stay in this private file. Their bus mirror is redacted.
  * KILL and the comms pause halt every adapter before a transport is called.
  */
+import { readTeammateTexts } from './imessage-teammate-inbox.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { linkSync, lstatSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
@@ -106,6 +107,49 @@ export interface OwnerThreadResult {
   deliveries?: Array<{ channel: OwnerChannel; status: 'sent' | 'duplicate' | 'refused' | 'disabled' | 'halted'; reason: string }>;
 }
 
+export interface ReplyGapEvent { teammate: string; direction: 'inbound' | 'outbound'; at: number }
+export interface TeammateReplyGap {
+  teammate: string;
+  lastInboundAt: number | null;
+  lastOutboundAt: number | null;
+  unansweredCount: number;
+  oldestUnansweredMs: number;
+  state: 'ok' | 'late' | 'unknown';
+}
+
+/** `events` is null when there is no evidence source: the answer is then `unknown`, never `ok`. */
+export function teammateReplyGap(events: readonly ReplyGapEvent[] | null, now: number, opts: { warnAfterMs?: number } = {}): TeammateReplyGap[] {
+  const warnAfterMs = opts.warnAfterMs ?? 5 * 60_000;
+  if (events === null) return [{ teammate: 'Teammates', lastInboundAt: null, lastOutboundAt: null, unansweredCount: 0, oldestUnansweredMs: 0, state: 'unknown' }];
+  const byTeammate = new Map<string, ReplyGapEvent[]>();
+  for (const event of events) {
+    if (!Number.isFinite(event.at)) continue;
+    byTeammate.set(event.teammate, [...(byTeammate.get(event.teammate) ?? []), event]);
+  }
+  return [...byTeammate].map(([teammate, rows]) => {
+    const at = (direction: ReplyGapEvent['direction']) => rows.filter(row => row.direction === direction).map(row => row.at);
+    const inbound = at('inbound');
+    const lastInboundAt = inbound.length ? Math.max(...inbound) : null;
+    const outbound = at('outbound');
+    const lastOutboundAt = outbound.length ? Math.max(...outbound) : null;
+    const waiting = inbound.filter(time => lastOutboundAt === null || time > lastOutboundAt);
+    const oldestUnansweredMs = waiting.length ? Math.max(0, now - Math.min(...waiting)) : 0;
+    return { teammate, lastInboundAt, lastOutboundAt, unansweredCount: waiting.length, oldestUnansweredMs,
+      state: waiting.length && oldestUnansweredMs >= warnAfterMs ? 'late' as const : 'ok' as const };
+  }).sort((a, b) => a.teammate.localeCompare(b.teammate));
+}
+
+/** Read unanswered rows directly: answered markers do not contain reply timestamps. */
+export function teammateReplyGapFromInbox(now: number, runsDir?: string, labels: Readonly<Record<string, string>> = {}): TeammateReplyGap[] {
+  const inbox = readTeammateTexts({ runsDir, now: () => now });
+  if (inbox.sourceState !== 'healthy') return teammateReplyGap(null, now);
+  const events = inbox.texts.map((text): ReplyGapEvent => ({
+    teammate: Object.hasOwn(labels, text.senderId) ? labels[text.senderId]! : 'Teammate',
+    direction: 'inbound', at: Date.parse(text.at),
+  }));
+  return teammateReplyGap(events, now);
+}
+
 export interface OwnerCommsStatus {
   schema: 'comms.owner-thread.status.v1';
   claimKey: typeof OWNER_THREAD_CLAIM_KEY;
@@ -114,6 +158,8 @@ export interface OwnerCommsStatus {
   paused: boolean;
   messages: number;
   adapters: OwnerAdapterStatus[];
+  /** Additive: how long teammate texts have waited for a reply (metadata only). */
+  replyGap: TeammateReplyGap[];
 }
 
 function clock(options: OwnerThreadOptions): number {
@@ -556,6 +602,7 @@ export function readOwnerCommsStatus(options: OwnerThreadOptions): OwnerCommsSta
     threadId: OWNER_THREAD_ID,
     kill, paused: hold, messages,
     adapters: listAdapterStatus(options.settings, kill, hold),
+    replyGap: teammateReplyGapFromInbox(clock(options), options.runsDir),
   };
 }
 
