@@ -28,6 +28,7 @@ import { STRAY_ID_PATTERN } from '../fleet/stray-slots.js';
 import { laneMedians, overrunOf } from '../fleet/job-overrun.js';
 import type { reassignQueuedJobs } from '../fleet/runs-reassign.js';
 import { isJobCommand, renderJobCommandReply, runTelegramJobCommand } from '../comms/telegram-job-command.js';
+import { handleChannelTestSendApi, VERSE_CHANNEL_TEST_SEND_PATH } from '../web/channel-test-send.js';
 
 export const VERSE_FLEET_RUNS_REASSIGN_PATH = '/api/verse/fleet/runs/reassign';
 import { emptyMission, readMissionControl, VERSE_FLEET_MISSION_PATH } from '../fleet/mission-control.js';
@@ -449,6 +450,7 @@ export function createFleetRunsApi(deps: FleetRunsApiDeps = {}): ApiModule {
     catch { return emptyMission(now()); }
   }
   return async (ctx, req, res, path, method) => {
+    if (path === VERSE_CHANNEL_TEST_SEND_PATH) return handleChannelTestSendApi(ctx, req, res, path, method);
     if (path === '/api/verse/fleet/runs/metrics') {
       if (method !== 'GET') { sendJson(res, 405, { error: 'method not allowed' }); return true; }
       sendJson(res, 200, await readMetricsPanel(deps.runsDir ?? defaultRunsDir()));

@@ -72,10 +72,11 @@ it('polls only while visible', async () => {
   await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
   expect(fetcher).not.toHaveBeenCalled();
   await act(async () => { view.rerender(<FleetChannelsPane {...props} />); });
-  expect(fetcher).toHaveBeenCalledTimes(1);
-  await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+  // Two pollers mount with the pane: the fleet-runs read and the channel-test read.
   expect(fetcher).toHaveBeenCalledTimes(2);
+  await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+  expect(fetcher).toHaveBeenCalledTimes(4);
   view.rerender(<FleetChannelsPane {...props} visible={false} />);
   await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
-  expect(fetcher).toHaveBeenCalledTimes(2);
+  expect(fetcher).toHaveBeenCalledTimes(4);
 });
