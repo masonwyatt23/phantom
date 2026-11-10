@@ -116,10 +116,7 @@ function rowsOf(parsed: unknown, path: string): Row[] {
   throw new IntentError(`Could not parse ${basename(path)}. Use JSONL or one JSON document.`);
 }
 
-async function rowsFromFile(path: string): Promise<Row[]> {
-  let raw: string;
-  try { raw = await readFile(path, 'utf8'); }
-  catch { throw new IntentError(`Could not read ${basename(path)}.`); }
+function rowsFromText(raw: string, path: string): Row[] {
   const trimmed = raw.trim();
   if (!trimmed) return [];
   if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
@@ -149,10 +146,7 @@ async function rowsFromFile(path: string): Promise<Row[]> {
  * schema; a tagged but invalid file fails the import instead of degrading to
  * rows. Untagged or unparsable files return null and keep the row path.
  */
-async function nativeLedgerItems(path: string): Promise<IntentItem[] | null> {
-  let raw: string;
-  try { raw = await readFile(path, 'utf8'); }
-  catch { throw new IntentError(`Could not read ${basename(path)}.`); }
+function nativeLedgerItems(raw: string, path: string): IntentItem[] | null {
   const trimmed = raw.trim();
   if (!trimmed.startsWith('{')) return null;
   let parsed: unknown;
@@ -232,12 +226,15 @@ export async function importIntentFiles(paths: string[], opts: { root?: string; 
   const incoming: IntentItem[] = [];
   for (const path of paths) {
     const fileSource = basename(path) || 'import';
-    const native = await nativeLedgerItems(path);
+    let raw: string;
+    try { raw = await readFile(path, 'utf8'); }
+    catch { throw new IntentError(`Could not read ${basename(path)}.`); }
+    const native = nativeLedgerItems(raw, path);
     if (native !== null) {
       incoming.push(...native);
       continue;
     }
-    for (const row of await rowsFromFile(path)) {
+    for (const row of rowsFromText(raw, path)) {
       const item = itemFromRow(row, fileSource, at);
       if (item) incoming.push(item);
     }
