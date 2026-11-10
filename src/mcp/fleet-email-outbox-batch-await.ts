@@ -29,7 +29,8 @@ export interface FleetEmailOutboxBatchAwaitReport {
   generatedAt: string;
   /** 'ok' once the saved config resolved to a stat-able outbox directory. */
   sourceState: FleetEmailOutboxAwaitSourceState;
-  /** Observed per-name rows in input order; null when the source failed before any poll could run. */
+  /** Per-name rows in input order; null if polling never started. On source failure,
+   * these are last observations, not proof of present delivery. */
   rows: BatchRow[] | null;
   timedOut: boolean;
   cancelled: boolean;
@@ -101,7 +102,7 @@ export async function readFleetEmailOutboxBatchAwait(
     signal: signal ?? new AbortController().signal,
   });
   return report('ok', {
-    rows: result.sourceFailure ? null : result.rows,
+    rows: result.rows,
     timedOut: result.timedOut,
     cancelled: result.cancelled,
     sourceFailure: result.sourceFailure,
