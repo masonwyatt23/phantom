@@ -1093,7 +1093,7 @@ def ratelimited(lane, since):
 
 # ---- precheck: returns (code, reason) to skip, None to launch. Timeout/error/usage -> launch.
 PC_MAX = 8
-from launch_precheck import precheck as shared_precheck, park_key, parked, park
+from launch_precheck import precheck as shared_precheck, park_key, parked, park, attempt_identity, empty_reason, read_attempts
 PARK_PATH = Q + "/precheck-parked.json"
 park_state = jload(PARK_PATH, {})
 if not isinstance(park_state, dict): park_state = {}
@@ -1347,6 +1347,7 @@ if not pause and not disk_hard_stop and not GATE["tripped"]:
     cand.sort(key=lambda f: (not bool(waste_risk(UIA.get(f[2]), f[2])), _bucket(f[0]), ready_ranks.get(f[1], len(ready_ranks)),
                              *_job_priority(f[0], f[1], f[4], f[4])[1:]))
     seen = set(); pc_n = 0; local_ok = None
+    empty_attempts = read_attempts(R); base_identities = {}
     def _local_healthy():   # one GET per tick; any error, timeout or non-200 -> unhealthy. Env proxies ignored.
         import urllib.request
         try:
@@ -1424,6 +1425,16 @@ if not pause and not disk_hard_stop and not GATE["tripped"]:
         if os.path.isdir(wt) and not (j in keep or (res and not res.startswith(("RESULT PR", "RESULT EMPTY")))):
             rest.append(line); seen.add(j); continue   # finished worktree awaiting reap: never double up
         seen.add(j)
+        if repo not in base_identities:
+            base_identities[repo] = attempt_identity(repo, "", H, _run)
+        identity = dict(base_identities[repo])
+        if identity:
+            import hashlib
+            identity['prompt_hash'] = hashlib.sha256(rd(pf).encode()).hexdigest()
+        reason = empty_reason(j, identity, empty_attempts, NOW)
+        if reason:
+            metric(dict(identity, event="skipped_empty", job=j, lane=lane, reason=reason))
+            ev("SKIPPED_EMPTY %s %s" % (j, reason)); continue
         key = park_key(line, rd(pf))
         if parked(park_state, j, key, NOW):
             rest.append(line); continue
@@ -1478,7 +1489,10 @@ if not pause and not disk_hard_stop and not GATE["tripped"]:
         open(RUN + "/" + j + ".line", "w").write(line + "\n")
         open("%s/%s.launch" % (R, j), "w").close()  # discard the previous attempt before claiming
         open(RUN + "/" + j + ".dispatched", "w").write(str(int(NOW)))
-        metric({"event": "claim", "job": j, "repo": repo, "lane": lane, "tier": tier})
+        if identity:   # batches re-render pf; the claim hash names the launched prompt
+            import hashlib
+            identity['prompt_hash'] = hashlib.sha256(rd(pf).encode()).hexdigest()
+        metric(dict(identity, event="claim", job=j, repo=repo, lane=lane, tier=tier))
         env = {k: os.environ[k] for k in ("HOME", "USER", "LOGNAME", "PATH", "TMPDIR", "LANG") if k in os.environ}
         launch_cmd = (["/usr/bin/python3", "-I", R + "/bin/local_job.py"] if lane == "codex-local"
                       else ["/bin/bash", R + "/bin/launch.sh"])

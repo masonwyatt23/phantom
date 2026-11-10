@@ -5,7 +5,7 @@
 # + RQ-QUEUE-AUTOUNPARK-1 (PARKED-DEP / DEPENDENCY GATE / UNPARK). Security must re-pin before live bin/ install.
 import os, re, sys, json, time, fcntl, subprocess, math
 from datetime import datetime, timezone
-from launch_precheck import precheck, park, parked as precheck_parked, park_key
+from launch_precheck import precheck, park, parked as precheck_parked, park_key, attempt_identity, empty_reason, read_attempts
 import queue_gate
 H = os.path.expanduser("~"); R = H + "/.ashlr-runs"; Q = R + "/queue"; EV = R + "/dispatch-events.log"
 gate = queue_gate.read_gate(Q)
@@ -337,6 +337,7 @@ def ranked_records(records):
     except (ValueError, KeyError, TypeError, AttributeError, ZeroDivisionError, OverflowError):
         return ordered
 
+empty_attempts = read_attempts(R)
 for i, j, attrs, text, raw in sorted(ranked_records(recs), key=lambda r: bool(re.search(r"A\d{6,}Q8$", r[1]))):
     if all(len(picks[l]) >= need[l] for l in CODEX): break
     if i in parked: continue
@@ -404,6 +405,14 @@ for i, j, attrs, text, raw in sorted(ranked_records(recs), key=lambda r: bool(re
     # balance codex lanes: line pool first, else the lane with more unmet need (cmp wins ties)
     lane = pool if len(picks[pool]) < need[pool] or pool == "codex-local" else max(GENERAL, key=lambda l: (need[l] - len(picks[l]), l == "devin"))
     if len(picks[lane]) >= need[lane]: continue
+    reason = empty_reason(j, attempt_identity(rm.group(1), prompt_body(j, rm.group(1), lane, tier, attrs, text), H), empty_attempts, ts)
+    if reason:
+        skip(j, reason)
+        if not DRY:
+            with open(R + '/metrics/jobs.jsonl', 'a') as stream:
+                stream.write(json.dumps(dict(event='skipped_empty', job=j, repo=rm.group(1),
+                                             lane=lane, reason=reason, ts=time.strftime('%Y-%m-%dT%H:%M:%S%z'))) + '\n')
+        continue
     if pc_left <= 0: break
     checked.add(j); pc_left -= 1
     pc = precheck(j, rm.group(1), prompt_body(j, rm.group(1), lane, tier, attrs, text), H, R)
