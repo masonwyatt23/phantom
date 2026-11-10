@@ -5,7 +5,7 @@
  * writeLedger, so any refusal leaves the persisted bytes unchanged.
  */
 import { randomBytes } from 'node:crypto';
-import { readLedger, writeLedger } from './store.js';
+import { readLedger, withIntentLock, writeLedger } from './store.js';
 import {
   DEFAULT_STALE_AFTER_MS, IntentError, MAX_EVIDENCE, MAX_INTENT_ITEMS, MAX_OWNER, MAX_PROVENANCE, MAX_PRS, MAX_RQ,
   MAX_SOURCE, MAX_TITLE, isIntentStatus, normalizeRq, pullKey, sameDirective, titleIsPartial, validIntentId,
@@ -148,35 +148,39 @@ function place(ledger: IntentLedger, incoming: IntentItem, at: string): IntentIt
 /** Record a directive. A matching RQ key or normalized title merges into the existing record. */
 export async function addIntent(input: IntentAddInput, root?: string): Promise<IntentItem> {
   const at = nowIso(input.now);
-  const ledger = await readLedger(root);
-  const item = place(ledger, draft(input, at), at);
-  await writeLedger(ledger, root);
-  return item;
+  return withIntentLock(root, async () => {
+    const ledger = await readLedger(root);
+    const item = place(ledger, draft(input, at), at);
+    await writeLedger(ledger, root);
+    return item;
+  });
 }
 
 /** Edit named fields, add RQ keys and append verification evidence (merged/shipped then become verified). */
 export async function updateIntent(id: string, patch: IntentUpdateInput, root?: string): Promise<IntentItem> {
   const at = nowIso(patch.now);
-  const ledger = await readLedger(root);
-  const item = ledger.items.find(row => row.id === id);
-  if (!item) throw new IntentError('Intent not found. Run ashlr fleet intent-read list.');
-  if (patch.title !== undefined) {
-    item.title = clip(patch.title, MAX_TITLE, 'Title');
-    if (titleIsPartial(item.title)) item.partial = true;
-  }
-  if (patch.source !== undefined) item.source = clip(patch.source, MAX_SOURCE, 'Source');
-  if (patch.owner !== undefined) item.owner = clip(patch.owner, MAX_OWNER, 'Owner');
-  if (patch.status !== undefined) item.status = status(patch.status);
-  if (patch.partial !== undefined) item.partial = patch.partial;
-  if (patch.rq) item.rq = unionRq(item.rq, patch.rq);
-  if (patch.evidence) {
-    const ref = clip(patch.evidence.ref, MAX_SOURCE, 'Evidence');
-    const note = patch.evidence.note ? { note: clip(patch.evidence.note, MAX_TITLE, 'Evidence note') } : {};
-    item.evidence = [...item.evidence, { at, kind: 'verification' as const, ref, ...note }].slice(-MAX_EVIDENCE);
-    if (item.status === 'shipped' || item.status === 'merged') item.status = 'verified';
-  }
-  item.lastTouchedAt = at;
-  item.updatedAt = at;
-  await writeLedger(ledger, root);
-  return item;
+  return withIntentLock(root, async () => {
+    const ledger = await readLedger(root);
+    const item = ledger.items.find(row => row.id === id);
+    if (!item) throw new IntentError('Intent not found. Run ashlr fleet intent-read list.');
+    if (patch.title !== undefined) {
+      item.title = clip(patch.title, MAX_TITLE, 'Title');
+      if (titleIsPartial(item.title)) item.partial = true;
+    }
+    if (patch.source !== undefined) item.source = clip(patch.source, MAX_SOURCE, 'Source');
+    if (patch.owner !== undefined) item.owner = clip(patch.owner, MAX_OWNER, 'Owner');
+    if (patch.status !== undefined) item.status = status(patch.status);
+    if (patch.partial !== undefined) item.partial = patch.partial;
+    if (patch.rq) item.rq = unionRq(item.rq, patch.rq);
+    if (patch.evidence) {
+      const ref = clip(patch.evidence.ref, MAX_SOURCE, 'Evidence');
+      const note = patch.evidence.note ? { note: clip(patch.evidence.note, MAX_TITLE, 'Evidence note') } : {};
+      item.evidence = [...item.evidence, { at, kind: 'verification' as const, ref, ...note }].slice(-MAX_EVIDENCE);
+      if (item.status === 'shipped' || item.status === 'merged') item.status = 'verified';
+    }
+    item.lastTouchedAt = at;
+    item.updatedAt = at;
+    await writeLedger(ledger, root);
+    return item;
+  });
 }

@@ -4,9 +4,10 @@
  * The repository never holds the ledger.
  */
 import { randomBytes } from 'node:crypto';
-import { chmod, lstat, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { chmod, lstat, mkdir, readFile, realpath, rename, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { acquireLocalStoreLock, releaseLocalStoreLock } from '../fleet/local-store-lock.js';
 import { assertMetadata } from '../connectors/profile.js';
 import { INTENT_LEDGER_SCHEMA, IntentError, emptyLedger, isIntentLedger, type IntentLedger } from './schema.js';
 
@@ -40,6 +41,21 @@ async function directory(root?: string): Promise<string> {
   if (info.isSymbolicLink() || !info.isDirectory()) throw new IntentError('Intent directory must be a regular directory.');
   await chmod(dir, 0o700);
   return dir;
+}
+
+/** Serialize direct read-modify-write operations across processes sharing this directory. */
+export async function withIntentLock<T>(root: string | undefined, action: () => Promise<T>): Promise<T> {
+  const dir = await realpath(await directory(root));
+  const path = join(dir, '.direct-write.lock');
+  const deadline = performance.now() + 5_000;
+  let lock = acquireLocalStoreLock(path, 0, { anchorPath: dir, exactPrivateStorage: true });
+  while (!lock && performance.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, 10));
+    lock = acquireLocalStoreLock(path, 0, { anchorPath: dir, exactPrivateStorage: true });
+  }
+  if (!lock) throw new IntentError('Intent ledger is busy or its lock is unavailable. Try again.');
+  try { return await action(); }
+  finally { releaseLocalStoreLock(lock); }
 }
 
 export async function ledgerFilePresent(root?: string): Promise<boolean> {
