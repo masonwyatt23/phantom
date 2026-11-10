@@ -70,6 +70,9 @@ const MAX_DIFF_CHARS = 4 * 1024;
 /** Internal privilege tags that external MCP callers may not persist. */
 const RESERVED_LEARN_TAGS = new Set(['m243:skill']);
 
+/** Mirrors NEEDS_MASON_REPLY_MAX without loading the needs ledger at startup; a test pins the two. */
+const NEEDS_RESOLVE_REPLY_MAX = 500;
+
 function ownerThreadRuntime(settings: OwnerThreadSettings) {
   return { runsDir: fixedOwnerRunsDir(), settings };
 }
@@ -477,6 +480,26 @@ const TOOLS: NativeToolImpl[] = [
       catch { result = { status: 'unavailable', items: [] }; }
       const limit = typeof args.limit === 'number' ? args.limit : 20;
       return { v: 1, status: result.status, count: result.items.length, items: result.items.slice(0, limit) };
+    },
+  },
+  {
+    name: 'phantom_fleet_needs_resolve',
+    description: "Record an answer Mason already gave to one open Needs-you item, as `ashlr fleet needs-resolve --json`: one bus event, the resolved marker, and the reply relayed to the planner inbox. Never permission to invent or decide an answer for Mason. KILL stops it.",
+    inputSchema: { type: 'object', properties: {
+      itemId: { type: 'string', pattern: '^nm-[0-9a-f]{12}$' },
+      reply: { type: 'string', maxLength: NEEDS_RESOLVE_REPLY_MAX },
+    }, required: ['itemId'], additionalProperties: false },
+    safety: 'append',
+    handler: async (args) => {
+      const { resolveNeedsMasonWithInbox } = await import('./fleet/needs-mason-relay.js');
+      const itemId = args.itemId as string;
+      // Runs root from trusted env only, exactly like phantom_fleet_needs; no argument can steer the path.
+      const result = await resolveNeedsMasonWithInbox(
+        { itemId, ...(typeof args.reply === 'string' ? { reply: args.reply } : {}) },
+        { runsDir: process.env.ASHLR_RUNS_DIR ?? join(homedir(), '.ashlr-runs'), source: 'mcp' });
+      // Refusals keep the CLI status codes; `error` flags the call as failed for MCP clients.
+      if (!result.ok) return { v: 1, error: result.error, status: result.code, itemId, inbox: result.inbox };
+      return { v: 1, status: 'resolved', itemId, duplicate: result.duplicate, inbox: result.inbox };
     },
   },
   {
@@ -1848,6 +1871,13 @@ export async function callNativeTool(name: string, rawArgs: unknown): Promise<Na
     invalid = !object || Object.keys(args).some(key => key !== 'limit') ||
       ('limit' in args && (!Number.isSafeInteger(args.limit) || (args.limit as number) < 1 || (args.limit as number) > 50))
       ? 'invalid needs arguments' : null;
+  } else if (name === 'phantom_fleet_needs_resolve') {
+    // Closed shape checked here so no malformed request reaches the bus or ledger.
+    const object = rawArgs !== null && typeof rawArgs === 'object' && !Array.isArray(rawArgs);
+    invalid = !object || Object.keys(args).some(key => key !== 'itemId' && key !== 'reply') ||
+      typeof args.itemId !== 'string' || !/^nm-[0-9a-f]{12}$/.test(args.itemId) ||
+      ('reply' in args && (typeof args.reply !== 'string' || args.reply.length > NEEDS_RESOLVE_REPLY_MAX))
+      ? 'invalid needs resolve arguments' : null;
   } else if (name === 'phantom_fleet_orders') {
     const object = rawArgs !== null && typeof rawArgs === 'object' && !Array.isArray(rawArgs);
     invalid = !object || Object.keys(args).some(key => key !== 'unservedOnly' && key !== 'limit') ||
