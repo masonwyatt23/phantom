@@ -42,3 +42,5 @@ export function buildNodesSnapshot(deps: { dir?: string; nowMs?: number } = {}) 
   }).sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
   return { ...base, observedAt: state.observedAt ? new Date(state.observedAt).toISOString() : null, leaderId, nodes, error: null };
 }
+
+export type NodesSnapshot = ReturnType<typeof buildNodesSnapshot>;
