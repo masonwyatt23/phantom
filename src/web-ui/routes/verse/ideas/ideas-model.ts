@@ -15,6 +15,8 @@ export interface IdeaRow {
   score: number | null;
   scoreText: string;
   source: string;
+  /** The backlog item's `detail`, when it has one: why the idea is worth doing. */
+  rationale?: string;
   /** Set on goal-drift ideas: the goal they came from. */
   goal?: { id: string; name: string };
 }
@@ -45,6 +47,7 @@ export function rankIdeas(items: readonly VerseBacklogItem[]): IdeaRow[] {
     const repo = text(item.repo);
     const goalId = text((item as { goalId?: unknown }).goalId);
     const goalName = text((item as { goalName?: unknown }).goalName);
+    const rationale = text((item as { detail?: unknown }).detail);
     const source = text(item.source) ?? UNKNOWN_SOURCE;
     const score = typeof item.score === 'number' && Number.isFinite(item.score) ? item.score : null;
     rows.push({
@@ -55,6 +58,7 @@ export function rankIdeas(items: readonly VerseBacklogItem[]): IdeaRow[] {
       score,
       scoreText: score === null ? 'unscored' : `score ${score}`,
       source,
+      ...(rationale ? { rationale } : {}),
       ...(source === 'goal-drift' && goalId ? { goal: { id: goalId, name: goalName ?? goalId } } : {}),
       order,
     });
