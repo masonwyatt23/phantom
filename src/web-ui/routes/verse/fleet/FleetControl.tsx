@@ -39,6 +39,7 @@ import { usePollWhileVisible } from '../shell/section-visibility.js';
 import { homeRunsQuery } from '../mobile/home-runs-query.js';
 import { dispatchdLine, dispatchdWorking } from './dispatchd-headline.js';
 import { darkSinceLabel } from './dark-since.js';
+import { preparingWord } from './preparing-stall.js';
 import { fleetControlQuery, postFleetControl, refreshFleetControlReads } from './fleet-control-queries.js';
 import { nativeFleetAvailable, runNativeFleetOp, type NativeFleetEvent, type NativeFleetOp } from './native-fleet.js';
 import { RunsSwitches } from './RunsSwitches.js';
@@ -256,6 +257,7 @@ export function FleetControl({ actions, grantFlow, darkSince = null, setupShownB
   const stage = g.stageId ? `${g.stageId}${g.stageIndex !== null && g.stageCount ? ` (${g.stageIndex + 1}/${g.stageCount})` : ''}` : null;
   const tickProgress = state.daemon.liveness === 'alive' && state.daemon.pid !== null ? state.daemon.tickProgress : null;
   const preparing = state.state === 'running' && tickProgress != null && state.agents.working === 0;
+  const preparation = preparingWord({ preparing, tickStartedAt: tickProgress?.tickStartedAt, running: dispatchWorking ?? 0, now, reason: tickProgress?.detail ?? blocker?.reason });
   // The cache retains an error during a retry; only a successful read clears it.
   const lastKnown = read.error !== undefined;
   const custodyNeedsAttention = state.custody.installed !== true || state.custody.keyInitialized !== true
@@ -276,8 +278,8 @@ export function FleetControl({ actions, grantFlow, darkSince = null, setupShownB
               <span className={styles.dot} data-tone={lastKnown ? 'muted' : STATE_TONE[state.state]} aria-hidden="true" />
             )}
           </span>
-          <span className={styles.stateWord}>{lastKnown ? 'Last known:' : ''} {preparing ? 'Preparing work' : STATE_WORD[state.state]}</span>
-          <span>{preparing ? `${dispatchWorking !== null && dispatchWorking > 0 ? `Phantom daemon idle · dispatchd ${dispatchWorking} working` : '0 agents working'} · ${tickProgress.phase}${stage ? ` · stage ${stage}` : ''}` : state.headline.replace(/^[A-Z][a-z]+ · /u, '')}</span>
+          <span className={styles.stateWord}>{lastKnown ? 'Last known:' : ''} {preparing ? preparation.word : STATE_WORD[state.state]}</span>
+          <span>{preparing ? `${dispatchWorking !== null && dispatchWorking > 0 ? `Phantom daemon idle · dispatchd ${dispatchWorking} working` : '0 agents working'} · ${tickProgress.phase}${stage ? ` · stage ${stage}` : ''}${preparation.detail ? ` · ${preparation.detail}` : ''}` : state.headline.replace(/^[A-Z][a-z]+ · /u, '')}</span>
         </p>
         <div className={styles.buttons} role="group" aria-label="Fleet controls">
           {state.paused ? (
