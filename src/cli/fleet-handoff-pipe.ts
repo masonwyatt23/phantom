@@ -32,7 +32,10 @@ function readInput(input: Input, timeout: number): Promise<ReadResult> {
       if ('error' in result) input.pause();
       resolve(result);
     };
-    const onData = (chunk: Buffer | string) => {
+    const onData = (chunk: unknown) => {
+      if (!Buffer.isBuffer(chunk) && typeof chunk !== 'string') {
+        return finish({ error: 'unsupported input chunk', code: 1 });
+      }
       const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
       size += bytes.length;
       if (size > maxBytes) return finish({ error: 'input exceeds 64 KiB', code: 1 });
