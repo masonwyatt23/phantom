@@ -5,6 +5,7 @@ import { apiGet } from '../../data/client.js';
 import { useQuery, useRefetch, useRefresh } from '../../data/hooks.js';
 import type { QueryDef } from '../../data/queries.js';
 import { usePollWhileVisible } from '../verse/shell/section-visibility.js';
+import { ProviderCards } from '../resources/ProviderCards.js';
 import styles from './ResourcePanel.module.css';
 
 export const resourceViewQuery: QueryDef<ResourceView> = {
@@ -36,6 +37,7 @@ export function ResourcePanel() {
     <header className={styles.header}><h2>Resource capacity</h2><button type="button" onClick={manualRefresh}>Refresh</button></header>
     {query.status === 'error' ? <p role="alert">Resource capacity unavailable. Last readings are not current.</p>
       : !view ? <p role="status">Loading resource capacity...</p> : <>
+        <ProviderCards view={view} />
         <div className={styles.scroll}><table>
           <caption>Pool usage and pace to each reset</caption>
           <thead><tr><th scope="col">Pool</th><th scope="col">Status</th><th scope="col">Used</th><th scope="col">Burn / hour</th><th scope="col">Pace</th><th scope="col">Reset</th><th scope="col">Exhaustion estimate</th></tr></thead>
