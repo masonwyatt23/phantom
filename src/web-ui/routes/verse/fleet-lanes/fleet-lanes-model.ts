@@ -1,4 +1,5 @@
 import { ageText, countText, relativeText, type FleetRuns } from '../ops/ops-runs-model.js';
+import type { LaneTargetRow } from '../ops/lane-targets-model.js';
 
 export function laneBars(runs: FleetRuns) {
   return runs.lanes.map(({ lane, running, target, queued, held, heldReason, tokensLastHour, merged24h }) => ({
@@ -6,6 +7,28 @@ export function laneBars(runs: FleetRuns) {
     fillPct: target > 0 ? Math.max(0, Math.min(100, running / target * 100)) : null,
     tone: held ? 'held' : 'running',
   }));
+}
+
+const HELD_REASON_MAX = 80;
+
+/**
+ * The held line under a lane card: the dispatchd hold row's verbatim
+ * held_reason (slots.json, read through laneTargetsQuery; the runs reading is
+ * the fallback), shortened to 80 chars with the full text returned as `title`,
+ * then the recorded lift time as "until <local time>" — or "no lift time
+ * recorded" when the held row carries no held_until (manual and credits
+ * holds leave it out).
+ */
+export function laneHeldLine(
+  lane: { held: boolean; heldReason: string | null },
+  targetsRow: Pick<LaneTargetRow, 'held' | 'heldReason' | 'heldUntil'> | undefined,
+): { text: string; title: string | undefined } | null {
+  if (!lane.held) return null;
+  const reason = (targetsRow?.heldReason ?? lane.heldReason)?.trim() ?? '';
+  const shown = reason.length > HELD_REASON_MAX ? `${reason.slice(0, HELD_REASON_MAX - 1)}…` : reason;
+  const untilMs = targetsRow?.held === true ? Date.parse(targetsRow.heldUntil ?? '') : NaN;
+  const lift = Number.isFinite(untilMs) ? `until ${new Date(untilMs).toLocaleString()}` : 'no lift time recorded';
+  return { text: `Held: ${shown || 'reason not reported'} · ${lift}`, title: reason || undefined };
 }
 
 export function formatTokens(n: number | null): string {

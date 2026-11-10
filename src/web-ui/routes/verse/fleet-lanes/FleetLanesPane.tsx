@@ -9,12 +9,13 @@ import { requestWorkerLogJob } from '../fleet-job-log/worker-log-selection.js';
 import { opsRunsQuery } from '../ops/ops-runs-queries.js';
 import { useDocumentVisible, usePollWhileVisible, useSectionVisible } from '../shell/section-visibility.js';
 import { claudeLaneFix, parseClaudeLane } from './claude-lane-state.js';
-import { burnLine, burnTotals, formatTokens, headline, isPhantomRepo, laneBars, repoMix, repoMixLine, repoShort, workerRows } from './fleet-lanes-model.js';
+import { burnLine, burnTotals, formatTokens, headline, isPhantomRepo, laneBars, laneHeldLine, repoMix, repoMixLine, repoShort, workerRows } from './fleet-lanes-model.js';
 import { strayLine, strayRows, strayTotals, strayTotalsLine } from './stray-slots-model.js';
 import { VerseControlLockedError } from '../autonomy/control-queries.js';
 import { postStrayStop } from './stray-stop.js';
 import { readFailureReason } from '../../../data/client.js';
 import { straySlotsQuery } from './stray-slots-queries.js';
+import { laneTargetsQuery } from '../ops/lane-targets-queries.js';
 import { takeRequestedLane, useRequestedLane } from './lane-focus-request.js';
 import { LanePauseButton } from './LanePauseButton.js';
 import { LaneHoldReleaseButton } from './LaneHoldReleaseButton.js';
@@ -61,6 +62,10 @@ export function FleetLanesPane({ visible }: Pick<PaneProps, 'visible'>) {
   const refresh = useRefresh(opsRunsQuery);
   usePollWhileVisible(refetch, 5_000, { enabled: visible, refreshOnShow: false });
   const data = read.data;
+  // slots.json (the dispatchd hold record) rides the same lane-targets read the
+  // row stepper and release button already make; it carries held_reason and
+  // the held_until lift time the runs projection does not.
+  const targets = useQuery(laneTargetsQuery, { enabled: !!data });
   const strays = useQuery(straySlotsQuery, { enabled: active && !!data });
   const refetchStrays = useRefetch(straySlotsQuery);
   // Strays are sticky host state, not tick-level data: 30 s is fresh enough
@@ -101,13 +106,13 @@ export function FleetLanesPane({ visible }: Pick<PaneProps, 'visible'>) {
           <h3 id="fleet-lanes-capacity" className={styles.title}>Lane capacity</h3>
           <p className={styles.burn}>{burnLine(burnTotals(data))}</p>
           {data.lanes.length === 0 ? <p className={styles.muted}>No lanes reported.</p> : <ul className={styles.list}>
-            {laneBars(data).map((lane) => { const laneStrays = strayLine(lane.lane, strays.data); const rows = strayRows(lane.lane, strays.data); const claude = parseClaudeLane(data.claudeLane, Date.now()); const claudeDown = lane.lane === 'claude' && lane.target > 0 && claude.down; return <li key={lane.lane} className={styles.lane} ref={lane.lane === focusedLane ? scrollToLane : undefined} data-focused={lane.lane === focusedLane ? 'true' : undefined} aria-current={lane.lane === focusedLane ? 'true' : undefined}>
-              <div className={styles.line}><strong>{lane.lane}</strong>{claudeDown ? <span className={styles.badge} data-tone="danger">Down</span> : null}{lane.held ? <span className={styles.badge} title={lane.heldReason ?? undefined}>Held</span> : null}<span className={styles.count}>{lane.running}/{lane.target} · {lane.queued} queued</span><LaneTargetStepper lane={lane.lane} /><LanePauseButton lane={lane.lane} /><LaneHoldReleaseButton lane={lane.lane} heldReason={lane.held ? lane.heldReason : null} heldUntil={null} /><span className={styles.burn}>· {formatTokens(lane.tokensLastHour)} tok/h · {lane.merged24h ?? '—'} merged/24 h</span></div>
+            {laneBars(data).map((lane) => { const laneStrays = strayLine(lane.lane, strays.data); const rows = strayRows(lane.lane, strays.data); const claude = parseClaudeLane(data.claudeLane, Date.now()); const claudeDown = lane.lane === 'claude' && lane.target > 0 && claude.down; const targetRow = targets.data?.lanes.find(item => item.lane === lane.lane); const held = laneHeldLine(lane, targetRow); return <li key={lane.lane} className={styles.lane} ref={lane.lane === focusedLane ? scrollToLane : undefined} data-focused={lane.lane === focusedLane ? 'true' : undefined} aria-current={lane.lane === focusedLane ? 'true' : undefined}>
+              <div className={styles.line}><strong>{lane.lane}</strong>{claudeDown ? <span className={styles.badge} data-tone="danger">Down</span> : null}{lane.held ? <span className={styles.badge} title={lane.heldReason ?? undefined}>Held</span> : null}<span className={styles.count}>{lane.running}/{lane.target} · {lane.queued} queued</span><LaneTargetStepper lane={lane.lane} /><LanePauseButton lane={lane.lane} /><LaneHoldReleaseButton lane={lane.lane} heldReason={lane.held ? lane.heldReason : null} heldUntil={targetRow?.heldUntil ?? null} /><span className={styles.burn}>· {formatTokens(lane.tokensLastHour)} tok/h · {lane.merged24h ?? '—'} merged/24 h</span></div>
               {claudeDown ? <>
                 <p className={styles.muted}>{[`${Math.max(0, lane.target - lane.running)} slots idle`, claude.reason, claude.sinceText].filter(Boolean).join(' · ')}</p>
                 <p className={styles.muted}>{claudeLaneFix()} <Button size="sm" onClick={() => { void copyText(claudeLaneFix().replace('Run on this Mac: ', '')).then((ok) => setCopyState(ok ? 'copied' : 'failed')); }}>{copyState === 'copied' ? 'Copied' : copyState === 'failed' ? 'Copy failed' : 'Copy'}</Button></p>
               </> : null}
-              {lane.held ? <p className={styles.muted}>Held: {(lane.heldReason ?? 'reason not reported').replace(/_/g, ' ')}</p> : null}
+              {held ? <p className={styles.muted} title={held.title} data-testid="lane-held-line">{held.text}</p> : null}
               {laneStrays ? <p className={styles.muted}>{laneStrays}</p> : null}
               {rows.map(row => <p className={styles.muted} key={`${row.job}:${row.pid}`}>
                 {row.label} <button type="button" className={styles.jobButton} disabled={stopping} aria-label={`Stop stray ${row.job}`} onClick={() => void stopRows(lane.lane, [row])}>Stop</button>

@@ -27,8 +27,8 @@ afterEach(() => {
 
 it('writes the held reason under each held lane instead of hiding it in a tooltip', async () => {
   serve(fixture); render(<FleetLanesPane visible />);
-  expect(await screen.findByText('Held: usage limit')).toBeInTheDocument();
-  expect(screen.getByText('Held: reason not reported')).toBeInTheDocument();
+  expect(await screen.findByText('Held: usage_limit · no lift time recorded')).toBeInTheDocument();
+  expect(screen.getByText('Held: reason not reported · no lift time recorded')).toBeInTheDocument();
   const badges = screen.getAllByText('Held');
   expect(badges).toHaveLength(2);
   expect(badges[0]).toHaveAttribute('title', 'usage_limit');
