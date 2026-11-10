@@ -15,6 +15,10 @@ import { Card, CardNote } from '../command/Surface.js';
 import { verseBacklogQuery } from '../autonomy/control-queries.js';
 import { usePollWhileVisible } from '../shell/section-visibility.js';
 import { groupByRepo, ideasHeadline, rankIdeas, sourceCounts, type RepoGroup } from './ideas-model.js';
+import { dropJobsQuery } from '../fleet-queue/drop-job-queries.js';
+import { fleetMergesQuery } from '../fleet-merges/fleet-merges-queries.js';
+import { readMerges } from '../fleet-merges/fleet-merges-model.js';
+import { ideaWorkState, type QueueLineLike } from './idea-queue-link.js';
 import { IdeaSteer } from './IdeaSteer.js';
 import styles from './ideas.module.css';
 
@@ -24,6 +28,16 @@ const PER_REPO = 5;
 export function IdeasPane({ visible = true }: { visible?: boolean }) {
   const backlog = useQuery(verseBacklogQuery, { enabled: visible, freshMs: IDEAS_POLL_MS });
   const goals = useQuery(goalsQuery, { enabled: visible });
+  const drops = useQuery(dropJobsQuery, { enabled: visible, freshMs: IDEAS_POLL_MS });
+  const runs = useQuery(fleetMergesQuery, { enabled: visible, freshMs: IDEAS_POLL_MS });
+  const snapshot = runs.data && typeof runs.data === 'object' ? runs.data as { workers?: unknown } : {};
+  const workers = Array.isArray(snapshot.workers) ? snapshot.workers : [];
+  const lines: QueueLineLike[] = [
+    ...(drops.data?.items ?? []).map(item => ({ jobId: item.id, title: item.title, state: 'queued' as const })),
+    ...workers.flatMap((worker: unknown) => worker && typeof worker === 'object' && 'job' in worker && typeof worker.job === 'string'
+      ? [{ jobId: worker.job, state: 'running' as const }] : []),
+  ];
+  const merges = readMerges(runs.data).merged.map(item => ({ ...item, jobId: item.job }));
   const [goalFilter, setGoalFilter] = useState('all');
   const refetch = useRefetch(verseBacklogQuery);
   usePollWhileVisible(() => { refetch(); }, IDEAS_POLL_MS, { enabled: visible });
@@ -60,7 +74,7 @@ export function IdeasPane({ visible = true }: { visible?: boolean }) {
         {counts.map(({ source, count }, i) => <Fragment key={source}>{i ? ' · ' : ''}{source} {count}</Fragment>)}
       </p>
       <div className={styles.groups}>
-        {groups.map((group, i) => <RepoCard key={group.repo} group={group} all={full[i]!} goals={goals.data ?? []} expanded={open.has(group.repo)} onToggle={() => toggle(group.repo)} />)}
+        {groups.map((group, i) => <RepoCard key={group.repo} group={group} all={full[i]!} goals={goals.data ?? []} lines={lines} merges={merges} expanded={open.has(group.repo)} onToggle={() => toggle(group.repo)} />)}
       </div>
     </>;
   }
@@ -74,7 +88,7 @@ export function IdeasPane({ visible = true }: { visible?: boolean }) {
   </div>;
 }
 
-function RepoCard({ group, all, goals, expanded, onToggle }: { group: RepoGroup; all: RepoGroup; goals: readonly GoalSummary[]; expanded: boolean; onToggle: () => void }) {
+function RepoCard({ group, all, goals, lines, merges, expanded, onToggle }: { group: RepoGroup; all: RepoGroup; goals: readonly GoalSummary[]; lines: readonly QueueLineLike[]; merges: Parameters<typeof ideaWorkState>[2]; expanded: boolean; onToggle: () => void }) {
   const listId = useId();
   const shown = expanded ? all.rows : group.rows;
   return (
@@ -83,6 +97,7 @@ function RepoCard({ group, all, goals, expanded, onToggle }: { group: RepoGroup;
         {shown.map(row => <li key={row.key} className={styles.row}>
           <span className={styles.title}>{row.title}</span>
           <span className={styles.meta}>{row.scoreText} · {row.source}</span>
+          {ideaWorkState(row, lines, merges).label && <span className={styles.meta}>{ideaWorkState(row, lines, merges).label}</span>}
           {ideaGoalId(row) ? <button type="button" className={styles.toggle} onClick={() => openDockPane('goals')}>{goalChipText(ideaGoalId(row), goals)}</button> : null}
           <IdeaSteer idea={row} repo={group.repo} />
         </li>)}
