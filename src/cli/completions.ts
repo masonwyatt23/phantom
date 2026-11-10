@@ -31,7 +31,7 @@ export const TOP_LEVEL_COMMANDS: string[] = [
   'onboard', 'demo', 'orient', 'docs', 'completions', 'plugins', 'x', 'comms', 'comms-agent',
   'channels', 'context', 'connectors', 'imessage', 'memory', 'route', 'radar', 'observe', 'growth', 'world', 'drafts',
   'director', 'best-of-n', 'invent', 'resource', 'resources', 'repos', 'usage', 'version', 'help',
-  'skills', 'universe', 'runtime', 'tune',
+  'skills', 'universe', 'runtime', 'tune', 'constitution', 'wb',
   // Dispatched by index.ts but previously missing here, so completion and
   // "did you mean" were blind to them (caught by cli-registry-drift).
   'verse', 'local-runtime',
@@ -129,7 +129,7 @@ const SUBCOMMANDS: Record<string, string[]> = {
   fleet: [
     'status', 'session', 'watch', 'events', 'lanes', 'lane-slots', 'direction', 'init', 'pause', 'resume', 'doctor',
     'automerge-canary', 'receipt', 'evidence', 'scorecard', 'oversight',
-    'judge-traces', 'judge-health', 'optimize-prompt', 'xreview', 'queue', 'outcomes', 'backlog', 'lane-slots',
+    'judge-traces', 'judge-health', 'optimize-prompt', 'xreview', 'queue', 'outcomes', 'backlog', 'board', 'lane-slots',
     'shed-plan', 'deploy-plan', 'job-latency', 'supply', 'eval-report', 'repo-rate', 'runs', 'journal', 'parked', 'slow-prs', 'pr-hygiene', 'merge-batch', 'rebase-plan', 'bus', 'usage', 'research-digest',
   ],
   bus: ['thread', 'task', '--peer', '--root', '--queue-root', '--json', '--help'],
