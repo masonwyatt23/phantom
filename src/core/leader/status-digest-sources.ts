@@ -8,6 +8,7 @@ import { gatherBriefFacts, type BriefFacts } from '../comms/leader-brief.js';
 import { readNeedsMason } from '../fleet/needs-mason-resolve.js';
 import { readFleetRunsDirState, type FleetRunsDirState } from '../fleet/runs-dir-state.js';
 import { readInboxEntries, type InboxEntry } from '../fleet/mason-inbox.js';
+import { isStatusAsk } from '../fleet/status-ask.js';
 import { defaultReleasePublicReader, verifyLatestWorkbenchRelease } from '../release-public-facts.js';
 import type { Fact, StatusDigestInput } from './status-digest.js';
 
@@ -88,7 +89,10 @@ export async function gatherStatusDigestInput(runsDir: string, now: Date, overri
   else if (inbox.value.sourceState === 'degraded') topP0 = { ok: false, reason: 'MASON-INBOX.md not readable' };
   else {
     // parseInbox returns newest first.
-    const entry = inbox.value.entries.find(e => e.priority === 'P0' && e.text.trim());
+    const entry = inbox.value.entries.find(e => {
+      const text = e.text.trim();
+      return e.priority === 'P0' && text && text !== '--help' && !(text.length <= 40 && isStatusAsk(text));
+    });
     const at = entry ? inboxAtMs(entry.at) : null;
     topP0 = { ok: true, value: entry ? { text: entry.text, ageMs: at === null ? null : Math.max(0, nowMs - at) } : null };
   }
