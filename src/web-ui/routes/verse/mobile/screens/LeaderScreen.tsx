@@ -24,6 +24,7 @@ import { refetchQuery } from '../../../../data/cache.js';
 import { readFailureReason } from '../../../../data/client.js';
 import { useQuery, useRefetch } from '../../../../data/hooks.js';
 import { leaderQuery } from '../../command/surface-data.js';
+import { countNewBelow, pillLabel } from '../../leader-thread/new-below-model.js';
 import { NO_OWNER_THREAD, ownerThreadQuery } from '../../leader-thread/owner-thread-queries.js';
 import {
   addLeaderDirective,
@@ -290,6 +291,9 @@ export function LeaderScreen() {
   const [directiveInterim, setDirectiveInterim] = useState('');
   const directiveId = useId();
   const end = useRef<HTMLDivElement>(null);
+  const nearEnd = useRef(true);
+  const forceScroll = useRef(false);
+  const [lastSeen, setLastSeen] = useState<string | null>(null);
   const unansweredTop = useRef<HTMLDivElement>(null);
   const [blockedOrders, setBlockedOrders] = useState<ReadonlySet<string>>(new Set());
   const blockedRef = useRef(new Set<string>());
@@ -340,8 +344,26 @@ export function LeaderScreen() {
 
   // Follow the conversation to its newest message (not when older pages load above).
   const lastKey = conversation.length ? conversation[conversation.length - 1]!.key : null;
+  const lineKeys = conversation.map(entry => ({ key: entry.key,
+    countable: entry.type === 'message' && (entry.message.from !== 'mason' || entry.message.channel === 'system'),
+  }));
+  const newBelow = countNewBelow(lineKeys, lastSeen);
+  useEffect(() => {
+    const scroller = end.current?.parentElement;
+    if (!scroller) return;
+    const onScroll = () => {
+      nearEnd.current = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight <= scroller.clientHeight;
+      if (nearEnd.current) setLastSeen(lastKey);
+    };
+    scroller.addEventListener('scroll', onScroll, { passive: true });
+    return () => scroller.removeEventListener('scroll', onScroll);
+  }, [lastKey]);
   useLayoutEffect(() => {
-    if (lastKey && !hasUnanswered) end.current?.scrollIntoView?.({ block: 'end' });
+    if (lastKey && !hasUnanswered && (nearEnd.current || forceScroll.current)) {
+      end.current?.scrollIntoView?.({ block: 'end' });
+      setLastSeen(lastKey);
+      forceScroll.current = false;
+    }
   }, [lastKey, hasUnanswered]);
 
   const refreshThread = useCallback(() => refetchQuery(leaderThreadQuery.key, () => leaderThreadQuery.fetch(), true), []);
@@ -410,6 +432,7 @@ export function LeaderScreen() {
         setSending(true);
         try {
           const result = question ? await answerLeaderQuestion(question.questionId ?? question.id, text) : await sendLeaderMessage(text);
+          if (result) forceScroll.current = true;
           if (result) setReceived((r) => [...r, result.message, ...(result.reply ? [result.reply] : [])]);
         } finally {
           setSending(false);
@@ -543,6 +566,11 @@ export function LeaderScreen() {
 
   const above = (
     <>
+      {newBelow > 0 ? <button type="button" className={ui.chip} aria-label={pillLabel(newBelow)} onClick={() => {
+        end.current?.scrollIntoView?.({ block: 'end' });
+        nearEnd.current = true;
+        setLastSeen(lastKey);
+      }}>{pillLabel(newBelow)}</button> : null}
       {answering ? (
         <div className={styles.answering}>
           <span className={styles.answeringText}>Answering: {previewText(answering.text, 100)}</span>

@@ -36,6 +36,7 @@ import styles from './leader-thread.module.css';
 import { busRepliesToMason, mergeByTime, type BusReply } from './thread-bus-replies.js';
 import { appendLaneLog, laneEventItems, laneTransitions, loadLaneLog, type LaneEvent } from './thread-lane-events.js';
 import { fleetInbox, fleetOutbox, lineChannel, lineSourceLabel, mergeThread } from './thread-merge-model.js';
+import { countNewBelow, pillLabel } from './new-below-model.js';
 import { canSend, scrollTargetIndex, trimReply } from './thread-reply-model.js';
 import { stepMatch, threadMatches, type ThreadFindItem } from './thread-find-model.js';
 import { mentionedRefs } from './thread-refs.js';
@@ -182,6 +183,7 @@ export function LeaderThreadPane({ visible }: Pick<PaneProps, 'visible'>) {
   const actions = useSurfaceActions();
   const logRef = useRef<HTMLDivElement>(null);
   const atEnd = useRef(true);
+  const [lastSeen, setLastSeen] = useState<string | null>(null);
   const inFlight = useRef(false);
   const [statusNow, setStatusNow] = useState<string | null>(null);
   const [checkingStatus, setCheckingStatus] = useState(false);
@@ -289,6 +291,10 @@ export function LeaderThreadPane({ visible }: Pick<PaneProps, 'visible'>) {
   }
 
   const lastKey = items.length ? items[items.length - 1]!.key : null;
+  const lineKeys = items.filter(item => item.type !== 'day').map(item => ({
+    key: item.key, countable: item.type !== 'line' || item.line.who !== 'mason' || item.line.source === 'system',
+  }));
+  const newBelow = countNewBelow(lineKeys, lastSeen);
   const forcedAt = useRef(scrollVersion);
   useLayoutEffect(() => {
     if (findOpen) return;
@@ -300,6 +306,7 @@ export function LeaderThreadPane({ visible }: Pick<PaneProps, 'visible'>) {
     if (!force && !atEnd.current) return;
     atEnd.current = true;
     el.scrollTop = el.scrollHeight;
+    setLastSeen(lastKey);
   }, [lastKey, scrollVersion, findOpen]);
 
   async function checkStatus() {
@@ -469,7 +476,10 @@ export function LeaderThreadPane({ visible }: Pick<PaneProps, 'visible'>) {
     <div ref={logRef} className={leaderStyles.log} role="log" aria-label="Conversation with the Leader" aria-live="polite" aria-relevant="additions" tabIndex={0}
       onScroll={() => {
         const el = logRef.current;
-        if (el) atEnd.current = el.scrollHeight - el.scrollTop - el.clientHeight <= STICK_PX;
+        if (el) {
+          atEnd.current = el.scrollHeight - el.scrollTop - el.clientHeight <= STICK_PX;
+          if (atEnd.current) setLastSeen(lastKey);
+        }
       }}>
       <div className={leaderStyles.logInner}>
         {ownerRead.paused ? <p className={leaderStyles.system}>Owner channels paused</p> : null}
@@ -478,6 +488,11 @@ export function LeaderThreadPane({ visible }: Pick<PaneProps, 'visible'>) {
       </div>
     </div>
     {note ? <p className={styles.note} role="note">{note}</p> : null}
+    {newBelow > 0 ? <button type="button" aria-label={pillLabel(newBelow)} onClick={() => {
+      if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
+      atEnd.current = true;
+      setLastSeen(lastKey);
+    }}>{pillLabel(newBelow)}</button> : null}
     <form className={styles.reply} onSubmit={onSubmit}>
       <div className={styles.replyRow}>
         <textarea ref={inputRef} aria-label="Reply to the Leader" placeholder="Reply to the Leader…" value={draft} maxLength={6000}
