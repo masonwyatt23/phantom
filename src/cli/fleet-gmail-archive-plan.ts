@@ -42,7 +42,7 @@ export async function cmdFleetGmailArchivePlan(args: string[]): Promise<number> 
   }
   if (json) console.log(JSON.stringify({ schema: 'fleet.gmail-archive-plan.v1', archivePlan: plan, topSenders }));
   else {
-    console.log(`Would archive ${chosen.size} of ${plan.unread} unread (target ${plan.target}). Archive only, nothing is deleted.`);
+    console.log(`Would archive ${chosen.size} of ${plan.unread} messages in the unread sample (target ${plan.target}). Archive only, nothing is deleted.`);
     for (const s of topSenders) console.log(`${s.count} from ${s.sender}`);
   }
   return 0;
