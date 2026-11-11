@@ -23,16 +23,17 @@ phm drive claude read-result --handle SESSION_ID --json
 ```
 
 `--seat` selects an exact seat; `--project` selects the project directory.
-Results use existing start/status/collect shapes; send-prompt returns
-`{ok,handle}`. Result text is scrubbed. A provider failure never triggers a
-second submission, because an ambiguous response might already have run.
+Results use existing DESK start/status/collect shapes; send-prompt returns
+`{ok,handle}`. Result text is scrubbed. Provider failures never trigger a second
+submission through GUI, because an ambiguous response might already have run.
 
 The library's optional `AppPorts.desk` accepts the existing per-chat DESK
 `ToolCall`, preserving access grants, secure-field refusal, confirmation and
-KILL for embedders that already hold a live turn's call channel. It falls back
-only when discovery succeeds with no matching seat, never on
-authentication/network errors; desktop handles are prefixed `desk-TARGET:`.
-The CLI does not wire a DESK credential yet: `phm drive` fails closed when no
-seat matches, and Phantom never drives its own GUI. Binding the live-turn
-bearer into the CLI is a new loopback client and waits for the Security pin
-the original change called out; nothing here mints a grant or approves access.
+KILL. It falls back only when discovery succeeds with no matching seat, never
+on authentication/network errors. Desktop handles are prefixed `desk-TARGET:`.
+A trusted live chat launcher may supply `PHM_DRIVE_DESK_BEARER` to enable the
+CLI fallback through the existing DESK MCP endpoint. This bearer must belong to
+an active turn with computer grants; drive never mints it or approves access.
+Without that bearer a missing seat fails closed. Phantom never drives its own GUI. No TCC helper or server binding is
+modified. Security (606e84d2) must review and pin this new loopback client before
+merge; these changes do not constitute that review.
