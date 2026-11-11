@@ -77,6 +77,7 @@ import {
 } from './ContextMeter.js';
 import { CopyGlyph, FocusGlyph, HandoffGlyph, MoreGlyph, PanelBottomGlyph, SplitGlyph, RenameGlyph, TrashGlyph } from './dock/dock-icons.js';
 import { getDockState, openDockPane, requestDiff, setDockWidth, setDockPlacement, toggleDock, toggleDockPane, useDock, useDockValue } from './dock/dock-store.js';
+import { useSideDockLayout } from './shell/side-dock-layout.js';
 import { useAgentWorkspace, setAgentWorkspace, WORKSPACE_PANES } from './dock/agent-workspace.js';
 import { paneApplies, paneChordLabel, usePanes } from './panes/index.js';
 import { setFocusMode, useFocusMode } from './shell/focus-mode.js';
@@ -148,6 +149,11 @@ export function Workspace(props: WorkspaceProps) {
     onSeatChange, onNew, onRetry, sidebarCollapsed, onToggleSidebar, onOpenSession, handoffOpen, onHandoffOpenChange,
     otherRunning, onRequestDevinStop } = props;
   const session = view.session;
+  // A narrow window docked at the screen's edge: the chat list steps aside once on entry (never
+  // again while the mode holds, so re-opening it by hand sticks) and the dock is a sheet.
+  const sidebarCollapsedNow = useRef(sidebarCollapsed);
+  sidebarCollapsedNow.current = sidebarCollapsed;
+  const sideDock = useSideDockLayout(() => { if (!sidebarCollapsedNow.current) onToggleSidebar(); });
   const [editing, setEditing] = useState(false);
   const [draftTitle, setDraftTitle] = useState('');
   const [busy, setBusy] = useState(false);
@@ -474,7 +480,7 @@ export function Workspace(props: WorkspaceProps) {
   return (
     // Paths the chat draws (the transcript, the live row) read relative to its roots.
     <PathRootsContext.Provider value={roots.roots}>
-    <section className={styles.workspace} aria-labelledby={headingId}>
+    <section className={styles.workspace} aria-labelledby={headingId} data-dock-layout={sideDock.mode} data-dock-as={sideDock.dockAs}>
       <header className={styles.header} data-app-region="drag">
         <Lockup
           eyebrow={session ? (
@@ -548,7 +554,7 @@ export function Workspace(props: WorkspaceProps) {
             </Tooltip>
           ) : null}
           <span className={styles.actionDivider} aria-hidden="true" />
-          <PaneToggles sidebarCollapsed={sidebarCollapsed} onToggleSidebar={onToggleSidebar} session={session} roots={roots.roots} />
+          <PaneToggles sidebarCollapsed={sidebarCollapsed} onToggleSidebar={onToggleSidebar} session={session} roots={roots.roots} workspaceDockWidth={sideDock.dockWidthPx} />
         </div>
       </header>
 
@@ -853,11 +859,13 @@ function shortcutFor(commandId: string): string | null {
  * "Chat list" expanded (the sidebar owns a "Hide chat list" button, and two
  * controls sharing one accessible name is an ambiguity, not a pair).
  */
-function PaneToggles({ sidebarCollapsed, onToggleSidebar, session, roots }: {
+function PaneToggles({ sidebarCollapsed, onToggleSidebar, session, roots, workspaceDockWidth = null }: {
   sidebarCollapsed: boolean;
   onToggleSidebar: () => void;
   session: VerseSession | null;
   roots: readonly string[];
+  /** Width for the split workspace from the side-dock layout; null keeps 60% of the window. */
+  workspaceDockWidth?: number | null;
 }) {
   const { state } = useDock();
   const registered = usePanes();
@@ -889,7 +897,7 @@ function PaneToggles({ sidebarCollapsed, onToggleSidebar, session, roots }: {
           setAgentWorkspace(session.id, !agentWorkspace);
           if (!agentWorkspace) {
             setDockPlacement('right');
-            setDockWidth(Math.floor(window.innerWidth * 0.6));
+            setDockWidth(workspaceDockWidth ?? Math.floor(window.innerWidth * 0.6));
             for (const id of WORKSPACE_PANES) openDockPane(id);
           }
         }}><SplitGlyph size={16} /></button></Tooltip> : null}

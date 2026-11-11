@@ -851,3 +851,22 @@
 }
 .guideDrafts button:hover { background: var(--bg-hover); }
 .guideDrafts button:focus-visible { outline: 2px solid var(--accent-500); outline-offset: 2px; }
+
+/* ---- docked as a narrow window on the right of the screen (480–760px) -----
+   The chat list has stepped aside and the dock is a sheet over the chat
+   (side-dock-layout.ts), so the thread and the steer box own the width. Long
+   unbroken tokens (PR URLs, job ids, paths) wrap inside them instead of
+   pushing a horizontal scrollbar. The header's Dock toggle is the close
+   control for the sheet and stays in the strip. */
+.workspace[data-dock-layout='side'],
+.workspace[data-dock-layout='phone'] {
+  overflow-x: hidden;
+}
+.workspace[data-dock-layout='side'] > :not(header) *,
+.workspace[data-dock-layout='phone'] > :not(header) * {
+  overflow-wrap: anywhere;
+}
+.workspace[data-dock-layout='side'] pre,
+.workspace[data-dock-layout='phone'] pre {
+  white-space: pre-wrap;
+}
