@@ -86,6 +86,7 @@ import {
   type PublicDaemonObservation,
 } from '../daemon/public-observation.js';
 import { serviceStatus } from '../daemon/service.js';
+import { buildNodesSnapshot } from '../nodes/view.js';
 import { daemonServiceInstallOptions } from '../daemon/service-config.js';
 import { buildFleetStatus, readFleetDaemonStatus } from '../fleet/status.js';
 import { getCachedFleetStatus, primeFleetStatusCache } from './fleet-status-cache.js';
@@ -736,7 +737,7 @@ async function buildVisionMissionSnapshot(cfg: AshlrConfig): Promise<Record<stri
 /** Write a JSON response. Never throws. */
 export function sendJson(res: ServerResponse, status: number, body: unknown): void {
   try {
-    const boundedBody = body && typeof body === 'object' && 'error' in body
+    const boundedBody = body && typeof body === 'object' && 'error' in body && (body as { error: unknown }).error != null
       ? { ...body, error: String((body as { error: unknown }).error).slice(0, 512) }
       : body;
     const payload = JSON.stringify(sanitizePublicJson(boundedBody) ?? null);
@@ -2249,6 +2250,11 @@ export async function handleApi(
         ? await ctx.readProjections.read('control')
         : await buildControlSnapshot(cfg);
       sendJson(res, 200, snapshot);
+      return true;
+    }
+
+    if (path === '/api/nodes' && method === 'GET') {
+      sendJson(res, 200, buildNodesSnapshot());
       return true;
     }
 
