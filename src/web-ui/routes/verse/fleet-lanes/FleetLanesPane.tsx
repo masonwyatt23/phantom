@@ -20,6 +20,10 @@ import { LanePauseButton } from './LanePauseButton.js';
 import { LaneHoldReleaseButton } from './LaneHoldReleaseButton.js';
 import { LaneTargetStepper } from './LaneTargetStepper.js';
 import { LaunchStallBanner } from './LaunchStallBanner.js';
+import { verseBootstrapQuery } from '../verse-queries.js';
+import { buildCapacityRows } from '../usage/capacity-strip-model.js';
+import { readCodexPersonal } from '../usage/codex-burn-model.js';
+import { laneUsageLine } from './lane-usage-line.js';
 import styles from './fleet-lanes.module.css';
 
 function pullUrl(repo: string, number: number): string | null {
@@ -61,6 +65,9 @@ export function FleetLanesPane({ visible }: Pick<PaneProps, 'visible'>) {
   const refresh = useRefresh(opsRunsQuery);
   usePollWhileVisible(refetch, 5_000, { enabled: visible, refreshOnShow: false });
   const data = read.data;
+  const bootstrap = useQuery(verseBootstrapQuery, { enabled: active, freshMs: 30_000 });
+  const usageNow = Date.now();
+  const usageReadings = { rows: buildCapacityRows(bootstrap.data?.seats ?? [], { now: usageNow }), personal: readCodexPersonal(data) };
   const strays = useQuery(straySlotsQuery, { enabled: active && !!data });
   const refetchStrays = useRefetch(straySlotsQuery);
   // Strays are sticky host state, not tick-level data: 30 s is fresh enough
@@ -101,8 +108,9 @@ export function FleetLanesPane({ visible }: Pick<PaneProps, 'visible'>) {
           <h3 id="fleet-lanes-capacity" className={styles.title}>Lane capacity</h3>
           <p className={styles.burn}>{burnLine(burnTotals(data))}</p>
           {data.lanes.length === 0 ? <p className={styles.muted}>No lanes reported.</p> : <ul className={styles.list}>
-            {laneBars(data).map((lane) => { const laneStrays = strayLine(lane.lane, strays.data); const rows = strayRows(lane.lane, strays.data); const claude = parseClaudeLane(data.claudeLane, Date.now()); const claudeDown = lane.lane === 'claude' && lane.target > 0 && claude.down; return <li key={lane.lane} className={styles.lane} ref={lane.lane === focusedLane ? scrollToLane : undefined} data-focused={lane.lane === focusedLane ? 'true' : undefined} aria-current={lane.lane === focusedLane ? 'true' : undefined}>
+            {laneBars(data).map((lane) => { const laneStrays = strayLine(lane.lane, strays.data); const rows = strayRows(lane.lane, strays.data); const claude = parseClaudeLane(data.claudeLane, Date.now()); const claudeDown = lane.lane === 'claude' && lane.target > 0 && claude.down; const usage = laneUsageLine(lane.lane, usageReadings, usageNow); return <li key={lane.lane} className={styles.lane} ref={lane.lane === focusedLane ? scrollToLane : undefined} data-focused={lane.lane === focusedLane ? 'true' : undefined} aria-current={lane.lane === focusedLane ? 'true' : undefined}>
               <div className={styles.line}><strong>{lane.lane}</strong>{claudeDown ? <span className={styles.badge} data-tone="danger">Down</span> : null}{lane.held ? <span className={styles.badge} title={lane.heldReason ?? undefined}>Held</span> : null}<span className={styles.count}>{lane.running}/{lane.target} · {lane.queued} queued</span><LaneTargetStepper lane={lane.lane} /><LanePauseButton lane={lane.lane} /><LaneHoldReleaseButton lane={lane.lane} heldReason={lane.held ? lane.heldReason : null} heldUntil={null} /><span className={styles.burn}>· {formatTokens(lane.tokensLastHour)} tok/h · {lane.merged24h ?? '—'} merged/24 h</span></div>
+              {usage ? <p className={styles.muted} title={usage.title}>{usage.text}</p> : null}
               {claudeDown ? <>
                 <p className={styles.muted}>{[`${Math.max(0, lane.target - lane.running)} slots idle`, claude.reason, claude.sinceText].filter(Boolean).join(' · ')}</p>
                 <p className={styles.muted}>{claudeLaneFix()} <Button size="sm" onClick={() => { void copyText(claudeLaneFix().replace('Run on this Mac: ', '')).then((ok) => setCopyState(ok ? 'copied' : 'failed')); }}>{copyState === 'copied' ? 'Copied' : copyState === 'failed' ? 'Copy failed' : 'Copy'}</Button></p>
