@@ -53,6 +53,11 @@ import { unansweredRows } from '../leader-unanswered-model.js';
 import { showMobileToast } from '../mobile-toast.js';
 import { inboxLinesFor } from '../leader-inbox-lines.js';
 import { mergeOwnerThread } from './leader-owner-model.js';
+import { clearPhoneLeaderDraft, loadPhoneLeaderDraft, savePhoneLeaderDraft } from './leader-draft-keep.js';
+
+function phoneDraftStorage(): Storage | null {
+  try { return window.localStorage; } catch { return null; }
+}
 import { LeaderPasses } from '../LeaderPasses.js';
 import { LeaderRefsRow } from '../LeaderRefsRow.js';
 import { MicButton } from '../MicButton.js';
@@ -280,7 +285,24 @@ export function LeaderScreen() {
   const [older, setOlder] = useState<LeaderThreadMessage[]>([]);
   const [olderState, setOlderState] = useState<'idle' | 'loading' | 'done' | 'error'>('idle');
   const [received, setReceived] = useState<LeaderThreadMessage[]>([]);
-  const [draft, setDraft] = useState('');
+  const [draft, setDraft] = useState(() => loadPhoneLeaderDraft(phoneDraftStorage()));
+  const draftRef = useRef(draft);
+  draftRef.current = draft;
+  useEffect(() => {
+    const timer = setTimeout(() => savePhoneLeaderDraft(phoneDraftStorage(), draft), 300);
+    return () => clearTimeout(timer);
+  }, [draft]);
+  useEffect(() => {
+    const flush = () => savePhoneLeaderDraft(phoneDraftStorage(), draftRef.current);
+    const onVisibility = () => { if (document.visibilityState === 'hidden') flush(); };
+    document.addEventListener('visibilitychange', onVisibility);
+    window.addEventListener('pagehide', flush);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibility);
+      window.removeEventListener('pagehide', flush);
+      flush();
+    };
+  }, []);
   const [answering, setAnswering] = useState<LeaderThreadMessage | null>(null);
   const questionForms = useRef<QuestionFormStore>(new Map());
   const [typedQuestion, setTypedQuestion] = useState<LeaderThreadMessage | null>(null);
@@ -417,7 +439,11 @@ export function LeaderScreen() {
       },
       onDone: () => {
         // Only what was sent is cleared: words typed meanwhile stay.
-        setDraft((d) => (d.trim() === text ? '' : d));
+        if (draftRef.current.trim() === text) {
+          draftRef.current = '';
+          clearPhoneLeaderDraft(phoneDraftStorage());
+          setDraft('');
+        }
         if (question) setAnswering(null);
         void refreshThread();
       },
