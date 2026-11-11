@@ -42,17 +42,19 @@ export async function cmdFleetGmailArchivePlan(args: string[]): Promise<number> 
   for (const m of messages) if (chosen.has(m.id)) counts.set(senderOf(m.from), (counts.get(senderOf(m.from)) ?? 0) + 1);
   const topSenders = [...counts].map(([sender, count]) => ({ sender, count }))
     .sort((a, b) => b.count - a.count || a.sender.localeCompare(b.sender)).slice(0, 3);
+  let persistence: { status: 'saved' | 'skipped' | 'failed'; error?: string } = { status: 'skipped' };
   if (save) {
-    try { writeGmailArchivePlanLatest(runsDir, { inbox: inbox ?? basename(dir), unread: plan.unread, target: plan.target, archiveCount: chosen.size, topSenders }); }
-    catch { console.error('Could not save the archive plan.'); }
+    try { writeGmailArchivePlanLatest(runsDir, { inbox: inbox ?? basename(dir), unread: plan.unread, target: plan.target, archiveCount: chosen.size, topSenders }); persistence = { status: 'saved' }; }
+    catch { persistence = { status: 'failed', error: 'Could not update the shared latest result.' }; }
   }
   const scope = { source: 'local-eml-export', scanned: messages.length, files: read.scope.files,
     limit: read.scope.limit, truncated: read.scope.truncated, unreadRepresentsLiveTotal: false };
-  if (json) console.log(JSON.stringify({ schema: 'fleet.gmail-archive-plan.v1', archivePlan: plan, topSenders, scope }));
+  if (json) console.log(JSON.stringify({ schema: 'fleet.gmail-archive-plan.v1', archivePlan: plan, topSenders, scope, persistence }));
   else {
+    if (persistence.status === 'failed') console.error('The shared latest result was not updated.');
     console.log(`Would archive ${chosen.size} of ${scope.scanned} scanned messages (target ${plan.target}). Archive only, nothing is deleted.`);
     if (scope.truncated) console.log(`Only the newest ${scope.limit} of ${scope.files} saved messages were scanned; this sample is not the live inbox's unread total.`);
     for (const s of topSenders) console.log(`${s.count} from ${s.sender}`);
   }
-  return 0;
+  return persistence.status === 'failed' ? 1 : 0;
 }

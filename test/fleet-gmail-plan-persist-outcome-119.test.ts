@@ -1,0 +1,45 @@
+import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, expect, it, vi } from 'vitest';
+import { cmdFleetGmailArchivePlan } from '../src/cli/fleet-gmail-archive-plan.js';
+import { readGmailArchivePlanLatest } from '../src/core/comms/gmail-archive-plan-latest.js';
+
+const root = mkdtempSync(join(tmpdir(), 'gmail-persist-119-'));
+afterEach(() => { vi.restoreAllMocks(); rmSync(root, { recursive: true, force: true }); });
+
+it('reports saved, failed and skipped persistence while retaining the computed plan', async () => {
+  const inbox = join(root, 'inbox');
+  const runs = join(root, 'runs');
+  mkdirSync(inbox);
+  mkdirSync(runs);
+  writeFileSync(join(inbox, 'one.eml'), 'From: news@example.test\nMessage-ID: <one@example.test>\nSubject: Newsletter\n\nHello\n');
+  const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+  const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+  const args = ['--dir', inbox, '--runs-dir', runs, '--target', '0'];
+  expect(await cmdFleetGmailArchivePlan([...args, '--json'])).toBe(0);
+  const saved = JSON.parse(String(log.mock.calls.at(-1)?.[0]));
+  expect(saved.persistence.status).toBe('saved');
+  expect(saved.scope.scanned).toBe(1);
+  expect(saved.archivePlan.unread).toBe(1);
+  expect(saved.topSenders).toBeDefined();
+  expect(readGmailArchivePlanLatest(runs)?.plans).toHaveLength(1);
+  const old = join(runs, 'comms', 'gmail-archive-plan-latest.json');
+  const bytes = readFileSync(old);
+  renameSync(join(runs, 'comms'), join(runs, 'previous'));
+  writeFileSync(join(runs, 'comms'), 'blocked');
+  log.mockClear();
+  expect(await cmdFleetGmailArchivePlan([...args, '--json'])).toBe(1);
+  expect(log).toHaveBeenCalledTimes(1);
+  const failed = JSON.parse(String(log.mock.calls[0]?.[0]));
+  expect(failed.persistence).toEqual({ status: 'failed', error: 'Could not update the shared latest result.' });
+  expect(failed.archivePlan).toEqual(saved.archivePlan);
+  expect(failed.scope).toEqual(saved.scope);
+  expect(readFileSync(join(runs, 'previous', 'gmail-archive-plan-latest.json'))).toEqual(bytes);
+  error.mockClear();
+  expect(await cmdFleetGmailArchivePlan(args)).toBe(1);
+  expect(error).toHaveBeenCalledWith('The shared latest result was not updated.');
+  log.mockClear();
+  expect(await cmdFleetGmailArchivePlan([...args, '--no-save', '--json'])).toBe(0);
+  expect(JSON.parse(String(log.mock.calls[0]?.[0])).persistence.status).toBe('skipped');
+});
