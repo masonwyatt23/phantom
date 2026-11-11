@@ -218,12 +218,16 @@ const isCount = (v: unknown): v is number => typeof v === 'number' && Number.isI
 /**
  * One alert per inbox in the saved Gmail archive plan whose unread count is over
  * its target. A payload that is not the plan schema, or any malformed plan row,
- * gives nothing. Plans older than 24 h say so in the title.
+ * gives nothing. Plans older than 24 h say so in the title. The payload's
+ * evidence scope decides the wording: a saved-export sample says so in the
+ * title, anything else says the count source is unknown, and every body notes
+ * Phantom did not check the live inbox or archive anything.
  */
 export function inboxOverAdapter(payload: unknown, now: number = Date.now()): FeedItem[] {
   const top = record(payload);
   const latest = record(top.latest);
   if (top.schema !== INBOX_SCHEMA || latest.schema !== INBOX_SCHEMA || !Array.isArray(latest.plans)) return [];
+  const sample = record(top.evidence).scope === 'saved-local-export-sample';
   const items: FeedItem[] = [];
   for (const raw of latest.plans as unknown[]) {
     const p = record(raw);
@@ -237,8 +241,8 @@ export function inboxOverAdapter(payload: unknown, now: number = Date.now()): Fe
     }).slice(0, 3);
     items.push({
       id: `inbox-over:${p.inbox}:${p.at}`, at: p.at, kind: 'alert', label: 'Inbox',
-      title: `${p.inbox}: ${p.unread} unread, target ${p.target}${stale ? ' (plan is stale)' : ''}`,
-      body: `The archive plan would archive ${p.archiveCount}.${senders.length ? ` Top senders: ${senders.join(', ')}` : ''}`,
+      title: `${p.inbox}: ${p.unread} unread${sample ? ' in the saved export' : ''}, target ${p.target}${stale ? ' (plan is stale)' : ''}`,
+      body: `${sample ? '' : 'Count source unknown. '}The archive plan would archive ${p.archiveCount}.${senders.length ? ` Top senders: ${senders.join(', ')}` : ''} Live inbox not checked by Phantom; nothing has been archived.`,
     });
   }
   return items;

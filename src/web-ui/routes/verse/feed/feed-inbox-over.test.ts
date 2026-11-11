@@ -14,13 +14,13 @@ describe('inboxOverAdapter', () => {
     expect(items).toEqual([{
       id: `inbox-over:work@example.test:${AT}`, at: AT, kind: 'alert', label: 'Inbox',
       title: 'work@example.test: 130 unread, target 100',
-      body: 'The archive plan would archive 30. Top senders: news@example.test (40), ads@example.test (9)',
+      body: 'Count source unknown. The archive plan would archive 30. Top senders: news@example.test (40), ads@example.test (9) Live inbox not checked by Phantom; nothing has been archived.',
     }]);
   });
 
   it('omits the sender list when there are none', () => {
     const [item] = inboxOverAdapter(payload({ ...plan('work@example.test', 130), topSenders: [] }), NOW);
-    expect(item!.body).toBe('The archive plan would archive 30.');
+    expect(item!.body).toBe('Count source unknown. The archive plan would archive 30. Live inbox not checked by Phantom; nothing has been archived.');
   });
 
   it('raises nothing at or under target', () => {
