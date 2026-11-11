@@ -166,9 +166,31 @@ async function nativeLedgerItems(path: string): Promise<IntentItem[] | null> {
   return parsed.items;
 }
 
+function sameProvenance(left: IntentProvenance, right: IntentProvenance): boolean {
+  return left.source === right.source && left.date === right.date && left.verbatim === right.verbatim;
+}
+
+/** A complete copy supersedes a partial copy; the aggregate remains conservative. */
 function addProvenance(item: IntentItem, row: IntentProvenance): void {
-  if (item.provenance.some((p) => p.source === row.source && p.date === row.date && p.verbatim === row.verbatim)) return;
+  const existing = item.provenance.find((p) => sameProvenance(p, row));
+  if (existing) {
+    if (existing.partial && !row.partial) existing.partial = false;
+    return;
+  }
   item.provenance = [...item.provenance, row].slice(-MAX_PROVENANCE);
+}
+
+function mergedProvenance(rows: IntentProvenance[]): IntentProvenance[] {
+  const merged: IntentProvenance[] = [];
+  for (const row of rows) {
+    const existing = merged.find((p) => sameProvenance(p, row));
+    if (existing) {
+      if (existing.partial && !row.partial) existing.partial = false;
+    } else {
+      merged.push(row);
+    }
+  }
+  return merged.slice(-MAX_PROVENANCE);
 }
 
 /** Never lowers a status; terminal states win, so an import cannot reopen work. */
@@ -210,6 +232,7 @@ function place(ledger: IntentLedger, incoming: IntentItem, at: string): boolean 
   if (matches.length === 0) {
     if (ledger.items.some((item) => item.id === incoming.id)) incoming.id = newId();
     if (ledger.items.length >= MAX_INTENT_ITEMS) throw new IntentError(`The intent ledger holds at most ${MAX_INTENT_ITEMS} items.`);
+    incoming.provenance = mergedProvenance(incoming.provenance);
     ledger.items.push(incoming);
     return false;
   }
