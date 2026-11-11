@@ -183,7 +183,8 @@ export async function readAdmission(opts: ReadAdmissionOptions = {}): Promise<Ad
 
   const report = evaluateAdmission({
     load1: (opts.load1 ?? (() => loadavg()[0]!))(), ncpu: (opts.ncpu ?? availableParallelism)(),
-    procs, worktrees, daemonTickAgeS, daemonWhy, slots, running, holder, adaptiveCap, disabled: await exists(join(queue, 'LOADGATE_OFF')),
+    // RQ-BATCH-SESSIONS-1: queue/LOADGATE_OFF no longer disables the gate (dispatchd reports it as off_switch_ignored).
+    procs, worktrees, daemonTickAgeS, daemonWhy, slots, running, holder, adaptiveCap,
   });
   return staleSnapshot ? { ...report, staleSnapshot } : report;
 }

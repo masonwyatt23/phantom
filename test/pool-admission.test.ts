@@ -166,9 +166,11 @@ describe('readAdmission and phm pool admission', () => {
     await writeFile(join(queue, 'install.lock'), '');
     expect((await readAdmission(probes({ pidAlive: () => true }))).installLock.holder).toBeNull();
   });
-  it('queue/LOADGATE_OFF disables the gate', async () => {
+  it('queue/LOADGATE_OFF no longer disables the gate (RQ-BATCH-SESSIONS-1)', async () => {
     await writeFile(join(queue, 'LOADGATE_OFF'), '');
-    expect(await readAdmission(probes({ load1: () => 500 }))).toMatchObject({ admit: true, disabled: true });
+    const report = await readAdmission(probes({ load1: () => 500 }));
+    expect(report).toMatchObject({ admit: false, disabled: false });
+    expect(report.reason).toMatch(/loadavg 500\.0 >/);
   });
   it('missing slots and status read as cap 0 and nothing running, blocking claims', async () => {
     await rm(join(queue, 'slots.json')); await rm(join(queue, 'status.json'));
