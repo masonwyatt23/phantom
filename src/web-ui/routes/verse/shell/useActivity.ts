@@ -8,7 +8,7 @@
  * count. (The chat list polls the same route WITHOUT a cursor for its
  * present-tense view — chat/use-chat-activity.ts, C2.)
  *
- * CADENCE. Every 5 s while the window is visible, every 30 s while it is
+ * CADENCE. Every 6 s while the window is visible, every 30 s while it is
  * hidden (the badges still need to be right when it comes back, and the tab
  * title count; C8's Rust owns native notifications). Never under the 2 s
  * floor (section-visibility MIN_POLL_INTERVAL_MS). Polls only while
@@ -33,7 +33,7 @@ import { VERSE_ACTIVITY_PATH } from '../../../../core/verse/workbench-types.js';
 import { ApiError, apiGet, readFailureReason } from '../../../data/client.js';
 import { MIN_POLL_INTERVAL_MS } from './section-visibility.js';
 
-export const ACTIVITY_POLL_VISIBLE_MS = 5_000;
+export const ACTIVITY_POLL_VISIBLE_MS = 6_000;
 export const ACTIVITY_POLL_HIDDEN_MS = 30_000;
 
 export type ActivityStatus = 'idle' | 'loading' | 'ready' | 'stale' | 'unavailable';

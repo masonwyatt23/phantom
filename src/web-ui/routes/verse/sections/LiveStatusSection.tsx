@@ -1,5 +1,4 @@
 import type { FleetDoctorReport } from '../../../../cli/fleet-doctor.js';
-import { useEffect } from 'react';
 import { apiGet } from '../../../data/client.js';
 import { useQuery, useRefetch, warmQuery } from '../../../data/hooks.js';
 import type { QueryDef } from '../../../data/queries.js';
@@ -9,6 +8,7 @@ import type { MergePaceReport } from '../../../../core/fleet/merge-pace.js';
 import type { LandedClosesReport } from '../../../../core/fleet/landed-closes-read.js';
 import { projectLiveStatus } from '../../../../core/fleet/live-status.js';
 import { safeHref } from '../cloud/cloud-model.js';
+import { usePollWhileVisible } from '../shell/section-visibility.js';
 
 type SlowPrsReport = { known?: boolean; repos?: { repo: string; count: number; urls: string[] }[] };
 type LiveHome = ReturnType<typeof projectLiveStatus> & { mergePace?: MergePaceReport | null; landedCloses?: LandedClosesReport | null; slowPrs?: SlowPrsReport | null; doctor: FleetDoctorReport | null };
@@ -36,10 +36,7 @@ export function warmOpeningData(): void {
 export function LiveStatusSection() {
   const result = useQuery(query);
   const refresh = useRefetch(query);
-  useEffect(() => {
-    const timer = setInterval(() => { if (!document.hidden) refresh(); }, 15_000);
-    return () => clearInterval(timer);
-  }, [refresh]);
+  usePollWhileVisible(refresh, 15_000);
   const data = result.data;
   return <section aria-label="Live fleet" style={{ padding: 24, overflow: 'auto' }}>
     <h1>Live fleet</h1>
