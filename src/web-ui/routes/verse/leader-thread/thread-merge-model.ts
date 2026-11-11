@@ -45,6 +45,8 @@ export function mergeThread(thread: readonly ThreadPostShape[], inbox: FleetRuns
   const relayed = new Set(thread.filter(m => m.from === 'mason').map(m => m.text.trim()));
   const annotated = annotateAck(inbox.map(entry => ({ ...entry, priority: '—' })), runs, nowMs);
   const ackFor = (index: number): MergedLine['ack'] => {
+    const recorded = inbox[index] as (typeof inbox)[number] & { ack?: string };
+    if (recorded?.ack === 'acked') return { state: 'seen', text: 'Seen' };
     const entry = annotated[index];
     return entry && entry.ack !== 'unknown' ? { state: entry.ack, text: entry.ackLabel } : null;
   };
