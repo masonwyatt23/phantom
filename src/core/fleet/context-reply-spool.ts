@@ -121,9 +121,23 @@ export function savePendingContextReply(spoolDir: string, pending: PendingContex
     if (acquired.state !== 'acquired') return 'unavailable';
     try {
       const usage = spoolUsage(spoolDir);
-      let exists = false;
-      try { exists = safeRecordStat(lstatSync(path)); } catch { /* absent or unsafe name still counts as new */ }
-      if (!exists && (usage.count >= SPOOL_MAX_RECORDS || usage.bytes >= SPOOL_MAX_TOTAL_BYTES)) return 'full';
+      let named: Stats | null = null;
+      try { named = lstatSync(path); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return 'unavailable'; }
+      if (named !== null) {
+        // Never replace retained work: the first valid record wins byte-for-byte.
+        // Only an identical reply and worker outcome is an idempotent success, and
+        // it keeps the original preparedAt so the wire TTL cannot be extended.
+        if (!safeRecordStat(named)) return 'unavailable';
+        const read = readStableRegularFile(path, { anchorPath: spoolDir, maxFileBytes: SPOOL_MAX_RECORD_BYTES, remainingBytes: SPOOL_MAX_RECORD_BYTES });
+        if (!read.ok || read.text.includes('\ufffd')) return 'unavailable';
+        const existing = parseRecord(read.text);
+        if (existing === null) return 'unavailable';
+        const existingWire = validateBusEnvelope(existing.reply);
+        return existingWire.ok && existingWire.json === checked.json &&
+          existing.workerExit.exitCode === pending.workerExit.exitCode ? 'saved' : 'unavailable';
+      }
+      if (usage.count >= SPOOL_MAX_RECORDS || usage.bytes >= SPOOL_MAX_TOTAL_BYTES) return 'full';
       const temporary = join(spoolDir, `.${basename(path)}.tmp`);
       try { if (safeRecordStat(lstatSync(temporary))) unlinkSync(temporary); } catch { /* no stale temp */ }
       writePrivateFileAtomically(temporary, path, record, { anchorPath: spoolDir, label: 'Context reply spool record' });
