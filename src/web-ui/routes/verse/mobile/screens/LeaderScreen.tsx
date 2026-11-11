@@ -1,3 +1,6 @@
+import { commandArgError, commandHints, parseComposerDraft } from '../../leader-thread/composer-commands.js';
+import { DAEMON_CONFIRM } from '../fleet-state.js';
+import { livePhoneCommandDeps, runPhoneCommand } from '../leader-commands.js';
 import { formatLeaderDisplayText } from '../../../../../core/vision/leader-display-text.js';
 /**
  * routes/verse/mobile/screens/LeaderScreen.tsx — the Leader conversation on
@@ -400,6 +403,25 @@ export function LeaderScreen() {
   };
 
   const send = (text: string) => {
+    const command = parseComposerDraft(text);
+    if (command.kind === 'command') {
+      const complete = async () => {
+        const result = await runPhoneCommand(command, livePhoneCommandDeps);
+        const failed = !!commandArgError(command) || result.startsWith(`/${command.name} failed:`) || result === `/${command.name} works in the desktop app.` || result === 'Status is unavailable right now.';
+        showMobileToast(result, failed ? 'danger' : 'success');
+        if (!failed) setDraft(d => d.trim() === text ? '' : d);
+      };
+      if (!commandArgError(command) && (command.name === 'pause' || command.name === 'resume' || command.name === 'release')) {
+        const confirm = command.name === 'resume' ? DAEMON_CONFIRM.resume : null;
+        runMobileAction({
+          title: confirm?.title ?? (command.name === 'pause' ? 'Pause the fleet' : `Release the ${command.arg} hold?`),
+          consequences: confirm?.body ?? '', confirmLabel: confirm?.confirmLabel ?? (command.name === 'pause' ? 'Pause' : 'Release hold'),
+          confirm: confirm !== null,
+          run: complete,
+        });
+      } else void complete();
+      return;
+    }
     const question = answering;
     runMobileAction({
       title: question ? 'Answer the Leader' : 'Message the Leader',
@@ -583,7 +605,7 @@ export function LeaderScreen() {
           onChange={setDraft}
           onSubmit={send}
           disabled={disabledReason !== null || sending}
-          hint={disabledReason ?? (answering ? 'Your answer closes this question for the Leader.' : 'Same thread as Mind and Telegram.')}
+          hint={disabledReason ?? (/^\s*\//.test(draft) ? commandHints(draft).map(item => item.usage).join(' · ') : (answering ? 'Your answer closes this question for the Leader.' : 'Same thread as Mind and Telegram.'))}
           above={above}
         />
       )}
