@@ -38,6 +38,7 @@ import { appendLaneLog, laneEventItems, laneTransitions, loadLaneLog, type LaneE
 import { fleetInbox, fleetOutbox, lineChannel, lineSourceLabel, mergeThread } from './thread-merge-model.js';
 import { canSend, scrollTargetIndex, trimReply } from './thread-reply-model.js';
 import { stepMatch, threadMatches, type ThreadFindItem } from './thread-find-model.js';
+import { THREAD_WINDOW_STEP, windowItems } from './thread-window-model.js';
 import { mentionedRefs } from './thread-refs.js';
 import { leaderCeoSummary } from './leader-ceo-model.js';
 import { LeaderOfficeStrip } from './LeaderOfficeStrip.js';
@@ -186,6 +187,8 @@ export function LeaderThreadPane({ visible }: Pick<PaneProps, 'visible'>) {
   const [statusNow, setStatusNow] = useState<string | null>(null);
   const [checkingStatus, setCheckingStatus] = useState(false);
   const [needsYouOnly, setNeedsYouOnly] = useState(false);
+  const [limit, setLimit] = useState(THREAD_WINDOW_STEP);
+  const previousHeight = useRef<number | null>(null);
   const [findOpen, setFindOpen] = useState(false);
   const [findQuery, setFindQuery] = useState('');
   const [findIndex, setFindIndex] = useState(0);
@@ -275,13 +278,27 @@ export function LeaderThreadPane({ visible }: Pick<PaneProps, 'visible'>) {
     return out;
   }, [merged, ownerLines, busRows, now, needsYouOnly]);
 
+  const { shown, hidden } = useMemo(() => windowItems(items, limit), [items, limit]);
   const matches = useMemo(() => threadMatches(items, findQuery), [items, findQuery]);
   const currentIndex = matches.length ? findIndex % matches.length : 0;
   const currentKey = matches[currentIndex];
   useEffect(() => { if (findOpen) findRef.current?.focus(); }, [findOpen]);
   useLayoutEffect(() => {
-    if (findOpen && currentKey) logRef.current?.querySelector<HTMLElement>('[data-find-current="true"]')?.scrollIntoView?.({ block: 'center' });
-  }, [findOpen, currentKey]);
+    if (!findOpen || !currentKey) return;
+    if (!shown.some(item => item.key === currentKey)) {
+      const index = items.findIndex(item => item.key === currentKey);
+      if (index >= 0) setLimit(items.slice(index).filter(item => item.type !== 'day').length);
+      return;
+    }
+    logRef.current?.querySelector<HTMLElement>('[data-find-current="true"]')?.scrollIntoView?.({ block: 'center' });
+  }, [findOpen, currentKey, items, shown]);
+  useLayoutEffect(() => {
+    const el = logRef.current;
+    if (el && previousHeight.current !== null) {
+      el.scrollTop += el.scrollHeight - previousHeight.current;
+      previousHeight.current = null;
+    }
+  }, [limit]);
   function closeFind() {
     setFindOpen(false);
     setFindQuery('');
@@ -423,7 +440,7 @@ export function LeaderThreadPane({ visible }: Pick<PaneProps, 'visible'>) {
       {needsYouOnly ? 'Nothing needs you right now.' : threadMissing ? (read!.reason ?? 'The Leader conversation did not answer.') : 'No conversation or interjections yet — reply below or post to the inbox from any channel.'}
     </p>;
   } else {
-    body = items.map(item => {
+    body = shown.map(item => {
       if (item.type === 'day') return <div key={item.key} className={leaderStyles.day} role="separator" aria-label={item.label}><span>{item.label}</span></div>;
       if (item.type !== 'line') return <BusReplyView key={item.key} row={item.row} now={now} match={findOpen && matches.includes(item.key)} current={findOpen && item.key === currentKey} />;
       const target = item.line.who === 'mason' ? steerTargetId(item.line.text) : null;
@@ -472,6 +489,10 @@ export function LeaderThreadPane({ visible }: Pick<PaneProps, 'visible'>) {
         if (el) atEnd.current = el.scrollHeight - el.scrollTop - el.clientHeight <= STICK_PX;
       }}>
       <div className={leaderStyles.logInner}>
+        {hidden > 0 ? <button type="button" onClick={() => {
+          previousHeight.current = logRef.current?.scrollHeight ?? null;
+          setLimit(value => value + THREAD_WINDOW_STEP);
+        }}>Show older ({hidden})</button> : null}
         {ownerRead.paused ? <p className={leaderStyles.system}>Owner channels paused</p> : null}
         {body}
         {commandLines.map(line => <LineView key={line.id} line={line} />)}
