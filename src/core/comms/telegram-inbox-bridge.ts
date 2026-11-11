@@ -17,7 +17,11 @@
  *   Owner-only command texts are answered ahead of the receiver and never
  *   reach the inbox or the queue: /fleet-status reports the fleet, /ship
  *   merges the release PR, /cos lists waiting chief-of-staff reply drafts
- *   and /approve <id> <code> sends one (telegram-cos-approve.ts).
+ *   and /approve <id> <code> sends one (telegram-cos-approve.ts). A short
+ *   plain status ask ("Phantom status", "status", "what's up") gets the
+ *   same five-line owner digest Slack answers with (owner-status-reply.ts);
+ *   like /fleet-status it is a question answered, not work, so nothing is
+ *   recorded to MASON-INBOX.
  *
  * Identity: integrations/telegram.ts only emits `senderUserId`/`privateChat`
  * after `verifiedPrivateSender` has matched the private chat, sender id and
@@ -34,6 +38,8 @@
  * best-effort; a failed Telegram send never unwrites an accepted entry.
  */
 
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import { sendTelegramMessage, type InboundEvent, type TelegramSendOpts, type TelegramSendResult } from '../integrations/telegram.js';
 import { createChannelReceiver, OPERATOR_SENDER_ID, type ChannelAck, type ChannelMessage, type ChannelReceiveResult } from '../fleet/channel-envelope.js';
 import { formatChannelAck } from '../fleet/channel-ack-text.js';
@@ -46,6 +52,7 @@ import {
 } from './telegram-cos-approve.js';
 import { deliverCosResult } from '../cos/intake.js';
 import { recordTelegramMessages } from './telegram-thread-map.js';
+import { composeOwnerStatusReply, isOwnerStatusRequest } from '../agents/owner-status-reply.js';
 
 export interface TelegramInboxDeps extends TelegramFleetStatusDeps {
   /** Release command dependencies. */
@@ -56,6 +63,8 @@ export interface TelegramInboxDeps extends TelegramFleetStatusDeps {
   runsDir?: string;
   /** Clock seam for tests. */
   now?: () => Date;
+  /** Plain-status-ask composer seam for tests. Default composeOwnerStatusReply. */
+  composeStatus?: (runsDir: string, now: Date) => Promise<string>;
 }
 
 /**
@@ -115,6 +124,17 @@ export async function recordTelegramToInbox(
     if (!configuredOwnerIds(cfg).includes(event.senderUserId!)) return { ok: false, reason: 'sender-not-allowed' };
     try {
       const reply = await telegramFleetStatus(deps);
+      const sent = await send(reply, typeof event.messageId === 'number' ? { replyToMessageId: event.messageId } : undefined, cfg);
+      return { ok: false, reason: sent.ok ? 'status-replied' : 'status-send-failed' };
+    } catch {
+      return { ok: false, reason: 'status-send-failed' };
+    }
+  }
+  if (isOwnerStatusRequest(text)) {
+    if (!configuredOwnerIds(cfg).includes(event.senderUserId!)) return { ok: false, reason: 'sender-not-allowed' };
+    try {
+      const runsDir = deps.runsDir ?? process.env.ASHLR_RUNS_DIR ?? join(homedir(), '.ashlr-runs');
+      const reply = await (deps.composeStatus ?? composeOwnerStatusReply)(runsDir, (deps.now ?? (() => new Date()))());
       const sent = await send(reply, typeof event.messageId === 'number' ? { replyToMessageId: event.messageId } : undefined, cfg);
       return { ok: false, reason: sent.ok ? 'status-replied' : 'status-send-failed' };
     } catch {
