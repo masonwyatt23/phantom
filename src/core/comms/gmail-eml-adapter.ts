@@ -31,7 +31,7 @@ export const EML_INBOX_READ_DEFAULT = 100;
 export const EML_INBOX_READ_MAX = 1000;
 
 export interface EmlInboxReadOptions {
-  /** Newest-first cap for this read, clamped to [1, {@link EML_INBOX_READ_MAX}]. Omit for the triage default. */
+  /** Newest-first candidate examination cap, clamped to [1, {@link EML_INBOX_READ_MAX}]. Omit for the triage default. */
   limit?: number;
 }
 /** How much of the saved export one read covers. EML files carry no Gmail unread flag,
@@ -54,7 +54,7 @@ export function readEmlInbox(dir: string, options?: EmlInboxReadOptions): GmailM
   return readEmlInboxDetailed(dir, options).messages;
 }
 
-/** Read newest saved messages and report how much of the export the sample covers. */
+/** Read newest saved messages and report coverage. Directory metadata is enumerated before the content-read cap applies. */
 export function readEmlInboxDetailed(dir: string, options?: EmlInboxReadOptions): EmlInboxRead {
   const requested = Math.floor(options?.limit ?? EML_INBOX_READ_DEFAULT);
   const limit = Number.isFinite(requested) ? Math.min(EML_INBOX_READ_MAX, Math.max(1, requested)) : EML_INBOX_READ_DEFAULT;
@@ -69,7 +69,7 @@ export function readEmlInboxDetailed(dir: string, options?: EmlInboxReadOptions)
   const seen = new Set<string>();
   let examined = 0;
   for (const file of files) {
-    if (messages.length === limit) break;
+    if (examined === limit) break;
     examined += 1;
     let fd: number | undefined;
     try {
