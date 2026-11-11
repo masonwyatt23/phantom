@@ -59,6 +59,34 @@ export interface ContextWorkerIO {
   stdout?: Writable; stderr?: Writable;
 }
 
+// Await write acknowledgements as well as backpressure. Abort only the child-owned
+// readable: pipeline's abort would also destroy the caller-owned destination.
+async function forwardOutput(source: Readable, destination: Writable, signal: AbortSignal): Promise<void> {
+  const cancel = (): void => { source.destroy(); };
+  signal.addEventListener('abort', cancel, { once: true });
+  try {
+    for await (const chunk of source) {
+      if (signal.aborted) break;
+      await new Promise<void>((resolve, reject) => {
+        const cleanup = (): void => { signal.removeEventListener('abort', abort); destination.off('error', error); };
+        const abort = (): void => { cleanup(); resolve(); };
+        const error = (err: Error): void => { cleanup(); reject(err); };
+        signal.addEventListener('abort', abort, { once: true });
+        destination.once('error', error);
+        try {
+          destination.write(chunk, (err?: Error | null) => {
+            if (err) { // Writable emits its error after invoking the callback.
+              signal.removeEventListener('abort', abort);
+              setImmediate(() => destination.off('error', error));
+              reject(err);
+            } else { cleanup(); resolve(); }
+          });
+        } catch (err) { cleanup(); reject(err); }
+      });
+    }
+  } finally { signal.removeEventListener('abort', cancel); }
+}
+
 /** Explicit argv is the action boundary; all retained material goes only to stdin. */
 export async function runContextWorker(opts: ContextWorkerOptions, io: ContextWorkerIO = {}): Promise<number> {
   const stderr = io.stderr ?? process.stderr;
@@ -109,6 +137,7 @@ export async function runContextWorker(opts: ContextWorkerOptions, io: ContextWo
     let closed = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let deadline: ReturnType<typeof setTimeout> | undefined;
+    const outputAbort = new AbortController();
     const stop = (signal: NodeJS.Signals): void => {
       if (closed) return;
       child.kill(signal);
@@ -117,6 +146,7 @@ export async function runContextWorker(opts: ContextWorkerOptions, io: ContextWo
     const interrupt = (signal: NodeJS.Signals): void => {
       if (timedOut) return;
       interrupted ??= signal; stop(signal);
+      if (closed) outputAbort.abort();
     };
     const int = (): void => interrupt('SIGINT');
     const term = (): void => interrupt('SIGTERM');
@@ -129,22 +159,23 @@ export async function runContextWorker(opts: ContextWorkerOptions, io: ContextWo
     child.on('error', () => { diagnostic('worker spawn failed'); failed = true; });
     child.once('spawn', () => {
       if (opts.timeoutMs !== undefined) deadline = setTimeout(() => {
-        if (interrupted || closed) return;
-        timedOut = true; stop('SIGTERM');
+        if (interrupted) return;
+        timedOut = true; outputAbort.abort(); stop('SIGTERM');
       }, opts.timeoutMs);
     });
     const transfers = [
       pipeline(Readable.from([payload]), child.stdin!).catch(() => { diagnostic('worker stdin failed'); fail(); }),
-      pipeline(child.stdout!, io.stdout ?? process.stdout, { end: false }).catch(fail),
-      pipeline(child.stderr!, stderr, { end: false }).catch(fail),
+      forwardOutput(child.stdout!, io.stdout ?? process.stdout, outputAbort.signal).catch(() => { if (!outputAbort.signal.aborted) fail(); }),
+      forwardOutput(child.stderr!, stderr, outputAbort.signal).catch(() => { if (!outputAbort.signal.aborted) fail(); }),
     ];
     child.once('close', (code, signal) => {
       closed = true;
+      if (interrupted) outputAbort.abort();
       if (timer) clearTimeout(timer);
-      if (deadline) clearTimeout(deadline);
-      process.off('SIGINT', int); process.off('SIGTERM', term);
-      opts.signal?.removeEventListener('abort', abort);
       void Promise.all(transfers).then(() => {
+        if (deadline) clearTimeout(deadline);
+        process.off('SIGINT', int); process.off('SIGTERM', term);
+        opts.signal?.removeEventListener('abort', abort);
         const ended = interrupted ?? signal;
         if (signal) diagnostic(`worker ended by ${signal}`);
         if (interrupted) diagnostic(`runner interrupted by ${interrupted}`);
