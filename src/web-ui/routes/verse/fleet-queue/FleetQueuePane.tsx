@@ -31,6 +31,7 @@ export function FleetQueuePane({ visible, host }: PaneProps) {
   const holds = useQuery(laneHoldsQuery, { enabled: visible, freshMs: 0 });
   const drops = useQuery(dropJobsQuery, { enabled: visible, freshMs: 0 });
   const refetchDrops = useRefetch(dropJobsQuery);
+  const [filter, setFilter] = useState<'duplicates' | 'stale' | null>(null);
   const [sheetOpen, setSheetOpen] = useState(false);
   const sheetRequest = useDropJobSheetRequest();
   useEffect(() => { if (sheetRequest) setSheetOpen(true); }, [sheetRequest]);
@@ -69,6 +70,9 @@ export function FleetQueuePane({ visible, host }: PaneProps) {
   if (data === null) return <p className={styles.message}>Queue not in this build</p>;
   if (data === undefined) return <div className={styles.root} role="status">{read.status === 'error' ? 'Queue is unavailable.' : <><span>Reading queue…</span><SkeletonLine /><SkeletonLine /></>}</div>;
 
+  const findings = (data as typeof data & { queueDupes?: { dupGroups: Array<{ ids: string[]; keep: string | null }>; stale: Array<{ id: string; ageMs: number | null }> } }).queueDupes;
+  const duplicateIds = findings?.dupGroups.flatMap(group => group.ids) ?? [];
+  const staleIds = findings?.stale.filter(row => row.ageMs !== null).map(row => row.id) ?? [];
   const notice = restockNotice(data.byLane);
   const snapshotLanes = laneSupply(snapshot.data);
   const waiting = queuedBehindHold(data.byLane, holds.data);
@@ -85,7 +89,9 @@ export function FleetQueuePane({ visible, host }: PaneProps) {
   });
   return <section className={styles.root} aria-label="Queue">
     <p className={styles.header}>{data.total} jobs · {data.ready} ready · {data.parked} parked · {data.skipsLast24h ?? '—'} precheck skips in 24 h{waiting > 0 && ` · ${waiting} queued lines wait on held lanes`}</p>
-    <p className={depth.verdict === 'deep' || depth.verdict === 'empty' ? `${styles.depth} ${styles.warning}` : styles.depth} role="status">{depth.text}</p>
+    {findings && <div><button type="button" aria-pressed={filter === 'duplicates'} onClick={() => setFilter(filter === 'duplicates' ? null : 'duplicates')}>Duplicates ({duplicateIds.length})</button> <button type="button" aria-pressed={filter === 'stale'} onClick={() => setFilter(filter === 'stale' ? null : 'stale')}>Stale ({staleIds.length})</button></div>}
+    {filter && <ul className={styles.list}>{(filter === 'duplicates' ? duplicateIds : staleIds).map((id, index) => <li key={`${id}:${index}`}><JobRefs text={id} onOpenJob={openJob} /></li>)}</ul>}
+    {!filter && <><p className={depth.verdict === 'deep' || depth.verdict === 'empty' ? `${styles.depth} ${styles.warning}` : styles.depth} role="status">{depth.text}</p>
     <Button size="sm" disabled={drops.data === null || drops.data === undefined} title={drops.data === null ? 'Update Phantom to write jobs from here' : undefined} onClick={() => setSheetOpen(true)}>New job</Button>
     {notice && <p className={styles.notice} role="status">{notice}</p>}
     {holds.status === 'error' && <p className={styles.notice} role="alert">Lane holds could not refresh.</p>}
@@ -121,6 +127,7 @@ export function FleetQueuePane({ visible, host }: PaneProps) {
       <ul className={styles.list}>{waitingRows(drops.data.items, Date.now()).map(row => <li className={styles.row} key={row.id}>{row.id} · {row.lane} · {row.tier} · {row.title} · {row.age}</li>)}</ul>
     </section>}
     {drops.status === 'error' && <p aria-live="polite">Waiting in drop could not refresh.</p>}
+    </>}
     <DropJobSheet open={visible && sheetOpen && drops.data !== null} onClose={() => setSheetOpen(false)} seed={sheetRequest?.seed ?? undefined} />
   </section>;
 }

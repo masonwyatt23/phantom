@@ -3,6 +3,7 @@ import { constants } from 'node:fs';
 import { lstat, open, realpath } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { isAbsolute, join, resolve, sep } from 'node:path';
+import { findQueueDupes } from './queue-dupes.js';
 import { parseReadyTsv } from './lane-console.js';
 import { scrubSecrets } from '../util/scrub.js';
 
@@ -23,6 +24,7 @@ export interface FleetQueueV1 {
   unmetDeps?: ParkedUnmetDep[];
   skips: PrecheckSkip[];
   skipsLast24h: number | null;
+  queueDupes?: ReturnType<typeof findQueueDupes>;
 }
 
 const JOB_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/;
@@ -270,6 +272,7 @@ export async function readFleetQueue(opts: { runsDir?: string; now?: () => numbe
     groups: [...groups.values()].map((group) => ({ ...group, jobs: group.jobs.sort().slice(0, 8) }))
       .sort((a, b) => b.count - a.count || a.reason.localeCompare(b.reason) || (a.lane ?? '').localeCompare(b.lane ?? '')),
     unmetDeps,
+    queueDupes: findQueueDupes(parsedRows.map(({ row }) => row), now),
     skips: skips.skips, skipsLast24h: skipsSource.state === 'degraded' && !skipsSource.text ? null : skips.last24h,
   };
 }

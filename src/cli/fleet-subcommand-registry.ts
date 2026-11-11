@@ -278,6 +278,7 @@ export const FLEET_SUBCOMMAND_LOADERS: Record<string, () => Promise<Record<strin
   'procs': () => import('./fleet-procs.js'),
   'queue-age': () => import('./fleet-queue-age.js'),
   'queue-counts': () => import('./fleet-queue-counts.js'),
+  'queue-dupes': () => import('./fleet-queue-dupes.js'),
   'queue-latency': () => import('./fleet-queue-latency.js'),
   'queue-lint': () => import('./fleet-queue-lint.js'),
   'queue-repeats': () => import('./fleet-queue-repeats.js'),
