@@ -48,6 +48,7 @@ import { NO_OWNER_THREAD, ownerThreadQuery } from './owner-thread-queries.js';
 import { fetchLeaderStatusNow } from './leader-status-now.js';
 import { sendLeaderInboxMessage, sendLeaderThreadMessage } from './leader-inbox-data.js';
 import { subscribeLeaderDraft, takeLeaderDraft } from './leader-draft-store.js';
+import { clearLeaderReply, loadLeaderReply, saveLeaderReply } from './leader-reply-keep.js';
 import { COMMS_CONFIRM_LINE, COMMS_TOML_PATH, INBOX_HELD_SENTENCE, inboxHeld } from './inbox-held-model.js';
 import { CopyPill } from '../apps/CopyPill.js';
 import { commandHints, completeCommand, parseComposerDraft } from './composer-commands.js';
@@ -190,7 +191,9 @@ export function LeaderThreadPane({ visible }: Pick<PaneProps, 'visible'>) {
   const [findQuery, setFindQuery] = useState('');
   const [findIndex, setFindIndex] = useState(0);
   const findRef = useRef<HTMLInputElement>(null);
-  const [draft, setDraft] = useState('');
+  const [draft, setDraft] = useState(() => loadLeaderReply(laneEventStorage()));
+  const draftRef = useRef(draft);
+  draftRef.current = draft;
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const [sending, setSending] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
@@ -204,6 +207,28 @@ export function LeaderThreadPane({ visible }: Pick<PaneProps, 'visible'>) {
   const [laneEvents, setLaneEvents] = useState<LaneEvent[]>(() => loadLaneLog(laneEventStorage()).events);
   // Inbox wall times, the merge and the day labels want a coarse tick.
   const now = useNow(10_000);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => saveLeaderReply(laneEventStorage(), draft), 400);
+    return () => window.clearTimeout(timer);
+  }, [draft]);
+
+  useEffect(() => {
+    const flush = () => saveLeaderReply(laneEventStorage(), draftRef.current);
+    window.addEventListener('pagehide', flush);
+    window.addEventListener('beforeunload', flush);
+    return () => {
+      window.removeEventListener('pagehide', flush);
+      window.removeEventListener('beforeunload', flush);
+      flush();
+    };
+  }, []);
+
+  function clearDraft() {
+    draftRef.current = '';
+    clearLeaderReply(laneEventStorage());
+    setDraft('');
+  }
 
   useEffect(() => {
     const take = () => {
@@ -319,7 +344,7 @@ export function LeaderThreadPane({ visible }: Pick<PaneProps, 'visible'>) {
     const done = (text: string) => {
       const at = Date.now();
       setCommandLines(lines => [...lines, { id: `composer-${at}-${lines.length}`, at, who: 'mason', source: 'system', text, ack: null }]);
-      setDraft('');
+      clearDraft();
       setScrollVersion(version => version + 1);
     };
     const gate = commandGate(command);
@@ -347,7 +372,7 @@ export function LeaderThreadPane({ visible }: Pick<PaneProps, 'visible'>) {
     setHeld(false);
     try {
       await sendLeaderInboxMessage(text);
-      setDraft('');
+      clearDraft();
       await refetchQuery(fleetRunsQuery.key, () => fleetRunsQuery.fetch(), true);
       setScrollVersion(version => version + 1);
     } catch (error) {
@@ -371,7 +396,7 @@ export function LeaderThreadPane({ visible }: Pick<PaneProps, 'visible'>) {
     setFailure(null);
     try {
       await sendLeaderThreadMessage(trimReply(draft));
-      setDraft('');
+      clearDraft();
       setHeld(false);
       refetchThread();
       refetchRuns();
