@@ -43,6 +43,7 @@ import { useQuery, useRefetch } from '../../../../data/hooks.js';
 import type { QuestionFormStore } from '../../leader/LeaderQuestionForm.js';
 const TypedQuestionForm = lazy(() => import('../../leader/LeaderQuestionForm.js'));
 
+import { NeedsMasonCard } from '../NeedsMasonCard.js';
 import { MobileComposer } from '../MobileComposer.js';
 import { answerLeaderQuestion } from '../../leader/thread-data.js';
 import { needsYouQuestionText, questionIdOfNeedsYouItem } from '../../leader/question-id.js';
@@ -513,6 +514,7 @@ export function NeedsYouScreen() {
   const nowMs = Date.now();
   const heldLanes = heldLaneItems(holds.data ?? null, nowMs);
   const hasFleetAttention = fleetAttention(fleet.data ?? null, nowMs).length > 0;
+  const [needsMasonClear, setNeedsMasonClear] = useState(false);
   const [split, setSplit] = useState<NeedsYouSplit>('all');
   const [undo, setUndo] = useState<{ id: string; title: string } | null>(null);
   const [answering, setAnswering] = useState<NeedsYouItem | null>(null);
@@ -635,6 +637,8 @@ export function NeedsYouScreen() {
       );
     } else if (coverage.vouched && (hasFleetAttention || heldLanes.length > 0)) {
       body = null;
+    } else if (coverage.vouched && !needsMasonClear) {
+      body = null;
     } else if (coverage.vouched) {
       body = (
         <EmptyState
@@ -684,6 +688,7 @@ export function NeedsYouScreen() {
         ) : undefined
       }
     >
+      <NeedsMasonCard canAct={canAct} offline={offline} onClearChange={setNeedsMasonClear} />
       {reachability === 'offline' ? (
         <Banner>This phone is offline. Showing what was waiting ({sinceText(activity.updatedAt).toLowerCase()}); actions are off until it reconnects.</Banner>
       ) : reachability === 'unreachable' && data ? (

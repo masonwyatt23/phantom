@@ -58,6 +58,7 @@ const READ_ROUTES = new Set<RemoteReadRoute>([
   '/api/verse/fleet/live/queue',
   '/api/verse/fleet/live/drop-jobs',
   '/api/verse/agent-bus',
+  '/api/verse/agent-bus/needs-mason',
   '/api/verse/fleet/control/switches',
   '/api/verse/fleet/control/lanes',
   '/api/verse/fleet/control/holds',
@@ -133,7 +134,7 @@ export function classifyRemoteRoute(method: string | undefined, rawTarget: strin
     if (path === '/api/verse/activity/seen' || path === '/api/verse/sessions'
       || path === '/api/verse/leader/thread' || path === '/api/verse/leader/directives'
       || path === '/api/verse/fleet/runs/inbox' || path === '/api/verse/fleet/cos/ask'
-      || path === '/api/verse/agent-bus') return { kind: 'write', path, stepUp: false };
+      || path === '/api/verse/agent-bus' || path === '/api/verse/agent-bus/needs-mason/resolve') return { kind: 'write', path, stepUp: false };
     if (path === '/api/verse/daemon' || path === '/api/verse/budget' || path === '/api/verse/authority'
       || path === '/api/verse/fleet/live' || path === '/api/verse/fleet/live/drop-jobs'
       || path === '/api/verse/fleet/control/switches' || path === '/api/verse/fleet/control/lanes'
@@ -263,6 +264,10 @@ export function validateRemoteMutation(decision: RemoteRouteDecision, body: unkn
   if (path === '/api/verse/fleet/live/drop-jobs') return keys(body, ['id', 'lane', 'tier', 'body'])
     && validateDropJob({ id: body.id, lane: body.lane, tier: body.tier, body: body.body }).ok;
   if (path === '/api/verse/agent-bus') return validateBusEnvelope(body).ok;
+  if (path === '/api/verse/agent-bus/needs-mason/resolve') return keys(body, ['itemId', 'reply'])
+    && typeof body.itemId === 'string' && /^nm-[0-9a-f]{12}(?![\s\S])/.test(body.itemId)
+    && (body.reply === undefined || (typeof body.reply === 'string' && body.reply.trim().length >= 1
+      && body.reply.trim().length <= 500 && ![...body.reply].some(char => { const code = char.charCodeAt(0); return code < 32 || (code >= 127 && code <= 159) || code === 0x2028 || code === 0x2029; })));
   if (path === '/api/verse/leader') return (keys(body, ['action', 'actionId'])
     && body.action === 'veto' && boundedText(body.actionId, 128))
     || (keys(body, ['action', 'itemId']) && body.action === 'dismiss' && boundedText(body.itemId, 256));
