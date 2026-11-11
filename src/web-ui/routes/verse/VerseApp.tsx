@@ -1,3 +1,5 @@
+import { needsMasonQuery } from './shell/needs-mason-query.js';
+import { groupNeedsMasonRows } from './shell/needs-mason-triage-model.js';
 /**
  * routes/verse/VerseApp.tsx — the Verse 3.10 workbench shell (unit C1;
  * SPEC-310C §1, SPEC-310B §6).
@@ -333,6 +335,9 @@ export function VerseApp() {
   const theme = useTheme();
   const toast = useToast();
   const activity = useActivity();
+  const needsMasonRead = useQuery(needsMasonQuery, { freshMs: FLEET_CI_RUNS_POLL_MS });
+  const refetchNeedsMason = useRefetch(needsMasonQuery);
+  usePollWhileVisible(refetchNeedsMason, FLEET_CI_RUNS_POLL_MS);
   const ciRead = useQuery(fleetCiRunsQuery, { freshMs: FLEET_CI_RUNS_POLL_MS });
   const refetchCi = useRefetch(fleetCiRunsQuery);
   usePollWhileVisible(refetchCi, FLEET_CI_RUNS_POLL_MS);
@@ -505,7 +510,8 @@ export function VerseApp() {
 
   const expanded = ui.railExpanded && !compact && !narrow;
   const ciCount = ciNeedsYouCount(ciRead.status === 'error' ? undefined : ciRead.data, Date.now());
-  const needsYouCount = data ? data.counts.needsYou + ciCount : ciCount || null;
+  const masonCount = groupNeedsMasonRows(needsMasonRead.data ?? []).hardLimit.length;
+  const needsYouCount = data ? data.counts.needsYou + ciCount + masonCount : ciCount + masonCount || null;
   // Settings, Apps & Accounts and Usage open from the gear, so on those pages
   // the gear IS the current rail item — for assistive tech too (aria-current,
   // and the page's name, since one gear stands for three pages), not only

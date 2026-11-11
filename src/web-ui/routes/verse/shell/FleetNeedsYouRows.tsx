@@ -20,9 +20,9 @@
  * other missing reading is reported as NOT answered — silence never earns
  * an all-clear.
  */
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Button } from '../../../components/primitives/Button.js';
-import { ApiError, apiGet, apiPost } from '../../../data/client.js';
+import { ApiError, apiPost } from '../../../data/client.js';
 import { useMutationHold, useQuery, useRefetch, useRefresh } from '../../../data/hooks.js';
 import { safeHref } from '../cloud/cloud-model.js';
 import { openDockPane } from '../dock/dock-store.js';
@@ -69,6 +69,7 @@ import {
 } from './fleet-needs-you.js';
 import { fleetRunsNeedsYouQuery } from './fleet-needs-you-query.js';
 import { tellLeadersPrefill } from './needs-you-tell.js';
+import { needsMasonQuery, type NeedsMasonRow } from './needs-mason-query.js';
 import { needsMasonResolvedText } from './needs-mason-resolve-text.js';
 import { AUTO_RESOLVE_REPLY, batchResolveSummary, groupNeedsMasonRows, hardLimitChip } from './needs-mason-triage-model.js';
 import { usePollWhileVisible } from './section-visibility.js';
@@ -157,32 +158,20 @@ function ResetReleaseButton({ lane, onReleased }: { lane: string; onReleased: (l
   </>;
 }
 
-interface NeedsMasonRow { id: string; text: string }
-
 /** NEEDS-MASON.md lines: Resolve (with an optional one-line reply) puts needs_mason.resolved on the bus. Text only, never HTML. */
-export function NeedsMasonRows() {
+export function NeedsMasonRows({ poll = true }: { poll?: boolean } = {}) {
   const { hasHold, token, touch } = useMutationHold();
-  const [items, setItems] = useState<NeedsMasonRow[]>([]);
+  const read = useQuery(needsMasonQuery);
+  const refresh = useRefresh(needsMasonQuery);
+  const refetch = useRefetch(needsMasonQuery);
+  usePollWhileVisible(refetch, FLEET_NEEDS_YOU_POLL_MS, { enabled: poll });
+  const [removed, setRemoved] = useState<Set<string>>(() => new Set());
+  const items = (read.data ?? []).filter(row => !removed.has(row.id));
+  const remove = (id: string) => setRemoved(previous => new Set([...previous, id]));
   const [replies, setReplies] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
   const [confirmation, setConfirmation] = useState<{ text: string; prefill?: string } | null>(null);
-  const readAbort = useRef<AbortController | null>(null);
-  function readItems() {
-    readAbort.current?.abort();
-    const abort = new AbortController();
-    readAbort.current = abort;
-    apiGet<{ items?: NeedsMasonRow[] }>('/api/verse/agent-bus/needs-mason', abort.signal)
-      .then(read => {
-        if (!abort.signal.aborted) setItems(Array.isArray(read.items) ? read.items.filter(row => typeof row?.id === 'string' && typeof row.text === 'string') : []);
-      })
-      .catch(() => { /* keep the last list when a read fails */ });
-  }
-  useEffect(() => {
-    readItems();
-    return () => readAbort.current?.abort();
-  }, []);
-  usePollWhileVisible(readItems, FLEET_NEEDS_YOU_POLL_MS);
   async function resolve(id: string) {
     if (!hasHold || !token || busy) { setError('Unlock to resolve.'); return; }
     setBusy(id);
@@ -191,15 +180,14 @@ export function NeedsMasonRows() {
     try {
       const reply = (replies[id] ?? '').trim();
       const response = await apiPost<unknown>('/api/verse/agent-bus/needs-mason/resolve', reply ? { itemId: id, reply } : { itemId: id }, token);
-      readAbort.current?.abort();
       const text = needsMasonResolvedText(items.find(row => row.id === id)?.text ?? '', response);
       setConfirmation({ text, ...(response !== null && typeof response === 'object' && 'inbox' in response && response.inbox === 'failed' ? { prefill: `Re needs-you ${id}: ${reply}` } : {}) });
       touch();
-      setItems(previous => previous.filter(row => row.id !== id));
+      remove(id);
     } catch (reason) {
-      if (reason instanceof ApiError && (reason.status === 404 || reason.status === 409)) setItems(previous => previous.filter(row => row.id !== id));
+      if (reason instanceof ApiError && (reason.status === 404 || reason.status === 409)) remove(id);
       else setError(reason instanceof ApiError ? reason.detail ?? reason.message : 'The resolve failed.');
-    } finally { setBusy(''); }
+    } finally { setBusy(''); refresh(); }
   }
   async function resolveAll(ids: string[]) {
     if (!hasHold || !token || busy) { setError('Unlock to resolve.'); return; }
@@ -207,23 +195,22 @@ export function NeedsMasonRows() {
     setError('');
     setConfirmation(null);
     const counts = { ok: 0, duplicate: 0, failed: 0 };
-    readAbort.current?.abort();
     try {
       for (const id of ids) {
         try {
           await apiPost<unknown>('/api/verse/agent-bus/needs-mason/resolve', { itemId: id, reply: AUTO_RESOLVE_REPLY }, token);
           counts.ok += 1;
-          setItems(previous => previous.filter(row => row.id !== id));
+          remove(id);
         } catch (reason) {
           if (reason instanceof ApiError && (reason.status === 404 || reason.status === 409)) {
             counts.duplicate += 1;
-            setItems(previous => previous.filter(row => row.id !== id));
+            remove(id);
           } else counts.failed += 1;
         }
       }
       touch();
       setConfirmation({ text: batchResolveSummary(counts) });
-    } finally { setBusy(''); }
+    } finally { setBusy(''); refresh(); }
   }
   if (items.length === 0 && !confirmation) return null;
   const { hardLimit, auto } = groupNeedsMasonRows(items);
@@ -262,12 +249,13 @@ export function NeedsMasonRows() {
   );
 }
 
-export function FleetNeedsYouRows({ split, nowMs, onResult }: {
+export function FleetNeedsYouRows({ split, nowMs, onResult, pollNeedsMason = true }: {
   /** The drawer's current split; the group renders only on All and Fleet. */
   split: NeedsYouSplit;
   /** The drawer's ticking clock, so the stall rule ages while it is open. */
   nowMs: number;
   onResult: (report: FleetNeedsYouReport) => void;
+  pollNeedsMason?: boolean;
 }) {
   const [clipboard, setClipboard] = useState<Record<string, 'copied' | 'failed'>>({});
   const [confirmation, setConfirmation] = useState('');
@@ -378,7 +366,7 @@ export function FleetNeedsYouRows({ split, nowMs, onResult }: {
   }, [onResult, combined, silent]);
 
   if (split !== 'all' && split !== 'fleet') return null;
-  if (combined.items.length === 0 && !confirmation) return <NeedsMasonRows />;
+  if (combined.items.length === 0 && !confirmation) return <NeedsMasonRows poll={pollNeedsMason} />;
 
   return (
     <><section aria-label="Fleet on this Mac">
@@ -499,6 +487,6 @@ export function FleetNeedsYouRows({ split, nowMs, onResult }: {
         );
       })}
     </section>
-    <NeedsMasonRows /></>
+    <NeedsMasonRows poll={pollNeedsMason} /></>
   );
 }

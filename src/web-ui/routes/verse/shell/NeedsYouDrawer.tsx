@@ -1,3 +1,5 @@
+import { needsMasonQuery } from './needs-mason-query.js';
+import { groupNeedsMasonRows } from './needs-mason-triage-model.js';
 /**
  * routes/verse/shell/NeedsYouDrawer.tsx — ⌘J, the one inbox for everything
  * waiting on the operator (unit C1; SPEC-310C §1 "Needs-you drawer").
@@ -155,22 +157,25 @@ export function NeedsYouDrawer() {
   // They count in the All and Fleet splits, and the producer's `answered`
   // joins the coverage rule: a Mac that is not reporting may never be
   // counted toward "All clear" (SPEC-310C §1).
+  const masonRead = useQuery(needsMasonQuery);
+  const masonCount = groupNeedsMasonRows(masonRead.data ?? []).hardLimit.length;
+  const masonVisible = split === 'all' || split === 'fleet';
   const [fleetNeeds, setFleetNeeds] = useState<FleetNeedsYouReport>({ answered: false, items: [], silent: null });
   const reportFleetNeeds = useCallback((report: FleetNeedsYouReport) => setFleetNeeds(report), []);
   const fleetRows = split === 'all' || split === 'fleet' ? fleetNeeds.items : [];
   const counts = useMemo(() => {
     const base = splitCounts(all);
-    const n = fleetNeeds.items.length;
+    const n = fleetNeeds.items.length + masonCount;
     return n === 0 ? base : { ...base, all: base.all + n, fleet: base.fleet + n };
-  }, [all, fleetNeeds.items.length]);
+  }, [all, fleetNeeds.items.length, masonCount]);
   const coverage = useMemo(() => {
     const base = splitCoverage(data?.sources ?? null, split);
-    if ((split !== 'all' && split !== 'fleet') || fleetNeeds.answered) return base;
-    return {
-      vouched: false,
-      silent: [...base.silent, { source: 'fleet' as NeedsYouSource, name: 'the fleet on this Mac', state: fleetNeeds.silent ?? 'unavailable' }],
-    };
-  }, [data?.sources, split, fleetNeeds]);
+    if (!masonVisible) return base;
+    const silent = [...base.silent];
+    if (!fleetNeeds.answered) silent.push({ source: 'fleet' as NeedsYouSource, name: 'the fleet on this Mac', state: fleetNeeds.silent ?? 'unavailable' });
+    if (masonRead.status === 'error' || !masonRead.data) silent.push({ source: 'fleet' as NeedsYouSource, name: 'Needs Mason', state: masonRead.status === 'error' ? 'error' : 'unavailable' });
+    return { vouched: base.vouched && silent.length === 0, silent };
+  }, [data?.sources, split, fleetNeeds, masonVisible, masonRead.status, masonRead.data]);
   const dispatchEnabled = (bootstrap.data?.dispatchEnabled ?? true) && !dispatchDenied;
 
   // Cloud and Devin PR verdicts: re-read whenever such an item's text
@@ -534,9 +539,9 @@ export function NeedsYouDrawer() {
               {/* "Fleet on this Mac" — the drawer's local producer; renders
                   its group at the top of the All and Fleet splits, null on
                   the others (and reports either way). */}
-              <FleetNeedsYouRows split={split} nowMs={now} onResult={reportFleetNeeds} />
+              <FleetNeedsYouRows split={split} nowMs={now} onResult={reportFleetNeeds} pollNeedsMason={false} />
               {items.length === 0 ? (
-                fleetRows.length === 0 ? (
+                fleetRows.length === 0 && (!masonVisible || masonCount === 0) ? (
                   <EmptySplit coverageText={describeSilence(coverage)} vouched={coverage.vouched} autonomyLabel={data?.autonomy?.label ?? null} split={split} />
                 ) : null
               ) : (
