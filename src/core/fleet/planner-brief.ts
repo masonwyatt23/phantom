@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { scrubSecrets } from '../util/scrub.js';
 import { ensurePrivateDirectory, writePrivateFileAtomic } from '../verse/preferences.js';
 import { parseIngestedTsv } from './drop-job-fate.js';
+import { linkCorrections } from './inbox-correction.js';
 import type { OrderTraceV1 } from './order-trace.js';
 import { inflightBriefLines } from './planner-inflight.js';
 import { orderCoverageBriefLines } from './planner-order-coverage.js';
@@ -25,6 +26,12 @@ const JOB_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/;
 const INBOX_CHANNEL_LINE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})\s+\[src:[a-z0-9._-]{1,32}(?:\s+id:[A-Za-z0-9._:-]{1,64})?\]\s+\S/;
 /** The Markdown heading shape MASON-INBOX.md producers write; it opens an entry. */
 const INBOX_HEADING = /^## \d{4}-\d{2}-\d{2} \d{2}:\d{2} ET \(/;
+/** Channel entry first line: `<iso> [src:<channel> (id:<id>)?] <first text>`. */
+const INBOX_CHANNEL_HEAD = /^(\S+) \[src:([a-z0-9._-]{1,32})(?:\s+id:([A-Za-z0-9._:-]{1,64}))?\]\s+(.*)$/;
+/** Deduped extra channels ride the first text as `[also:a,b] `; they are not message text. */
+const INBOX_ALSO_TAG = /^\[also:[a-z0-9._,-]{1,200}\] ?/;
+/** The wall-clock part of a `## … ET` heading, for correction marker labels. */
+const INBOX_HEADING_TIME = /^## (\d{4}-\d{2}-\d{2} \d{2}:\d{2}) ET/;
 // eslint-disable-next-line no-control-regex -- ledger titles must stay a single printable line.
 const CONTROL = /[\x00-\x1f\x7f-\x9f]/g;
 const INGESTED = 'leader/drop/ingested.tsv';
@@ -52,6 +59,28 @@ export interface PlannerBriefOptions {
   wasteRisk?: () => Promise<WasteRiskProjection[]>;
 }
 const lines = (text: string): string[] => text === '' ? [] : text.replace(/\r\n/g, '\n').replace(/\n$/, '').split('\n');
+
+interface InboxEntryMeta {
+  key: string;
+  channel?: string;
+  atMs: number;
+  id?: string;
+  /** Entry text after its channel-line prefix or heading — what a CORRECTION anchors on. */
+  text: string;
+  /** Heading time shown in marker lines (ISO for channel lines, `… ET` for headings). */
+  label: string;
+}
+
+/** Distill a parsed inbox entry into its linkCorrections input plus marker label. */
+function inboxEntryMeta(entry: { heading: string; body: string[] }, key: string): InboxEntryMeta {
+  const channel = INBOX_CHANNEL_HEAD.exec(entry.heading);
+  if (channel) {
+    const first = channel[4]!.replace(INBOX_ALSO_TAG, '');
+    return { key, channel: channel[2]!, atMs: Date.parse(channel[1]!), id: channel[3], text: [first, ...entry.body].join('\n'), label: channel[1]! };
+  }
+  const time = INBOX_HEADING_TIME.exec(entry.heading)?.[1];
+  return { key, atMs: NaN, text: entry.body.join('\n'), label: time === undefined ? entry.heading.slice(3, 83) : `${time} ET` };
+}
 
 /** Build a fresh, scrubbed brief; unavailable sources are recorded instead of throwing. */
 export async function buildPlannerBrief(opts: PlannerBriefOptions = {}) {
@@ -141,18 +170,30 @@ export async function buildPlannerBrief(opts: PlannerBriefOptions = {}) {
       else if (line.trim()) fragment++;
     }
     if (fragment) inboxBody.push(`(${fragment} line${fragment === 1 ? '' : 's'} without a timestamped heading omitted — partial or foreign content)`);
+    // Correction entries stay in place; the markers name their targets so no
+    // pass acts on a superseded order. Marker lines count toward the budget.
+    const metas = entries.map((entry, index) => inboxEntryMeta(entry, String(index)));
+    const metaByKey = new Map(metas.map(meta => [meta.key, meta]));
+    const links = linkCorrections(metas);
     const picked: string[] = [];
     let used = 0;
     let omitted = 0;
     for (let i = entries.length - 1; i >= 0; i--) {
       const entry = entries[i]!;
+      const link = links.get(metas[i]!.key);
+      const corrector = link?.correctedBy === undefined ? undefined : metaByKey.get(link.correctedBy);
+      const target = link?.corrects === undefined ? undefined : metaByKey.get(link.corrects);
+      const markers = [
+        ...(corrector ? [`[CORRECTED by ${corrector.label}, read the correction below]`] : []),
+        ...(target ? [`[corrects ${target.id ?? target.label}]`] : []),
+      ];
       let complete = true;
-      let rendered = [entry.heading, ...entry.body].join('\n');
+      let rendered = [entry.heading, ...markers, ...entry.body].join('\n');
       let bytes = Buffer.byteLength(rendered) + 1;
       if (used + bytes > INBOX_BUDGET) {
         if (bytes <= INBOX_BUDGET) { omitted++; continue; }
         complete = false;
-        rendered = `${entry.heading}\n(order body omitted: entry is ${bytes} bytes — over the ${INBOX_BUDGET_LABEL} inbox budget)`;
+        rendered = [entry.heading, ...markers, `(order body omitted: entry is ${bytes} bytes — over the ${INBOX_BUDGET_LABEL} inbox budget)`].join('\n');
         bytes = Buffer.byteLength(rendered) + 1;
         if (used + bytes > INBOX_BUDGET) { omitted++; continue; }
       }
