@@ -7,7 +7,7 @@ import { scrubSecrets } from '../util/scrub.js';
 
 export type Fact<T> = { ok: true; value: T } | { ok: false; reason: string };
 
-export interface StatusDigestLane { lane: string; running: number; target: number; held: boolean; heldReason: string | null }
+export interface StatusDigestLane { lane: string; running: number; target: number; held: boolean; heldReason: string | null; queued?: number | null }
 
 export interface StatusDigestInput {
   installedVersion: Fact<string>;
@@ -44,9 +44,11 @@ export function truncateP0(text: string): string {
 export function buildStatusDigest(input: StatusDigestInput): string[] {
   const pending = input.updatePending === null ? '' : input.updatePending ? ' · update pending' : ' · up to date';
   const lanes = show(input.lanes, rows => {
-    const live = rows.filter(row => !row.held && row.target > 0).map(row => `${row.lane} ${row.running}/${row.target}`);
+    const isStalled = (row: StatusDigestLane): boolean => !row.held && row.target > 0 && row.running === 0 && Number.isSafeInteger(row.queued) && (row.queued ?? 0) > 0;
+    const live = rows.filter(row => !row.held && row.target > 0 && !isStalled(row)).map(row => `${row.lane} ${row.running}/${row.target}`);
+    const stalled = rows.filter(isStalled).map(row => `${row.lane} ${row.running}/${row.target} (${row.queued} queued)`);
     const held = rows.filter(row => row.held).map(row => `${row.lane} (${row.heldReason?.replace(/\s+/g, ' ').trim() || 'no reason recorded'})`);
-    const parts = [live.join(', '), held.length ? `held: ${held.join(', ')}` : ''].filter(Boolean);
+    const parts = [live.join(', '), stalled.length ? `stalled: ${stalled.join(', ')}` : '', held.length ? `held: ${held.join(', ')}` : ''].filter(Boolean);
     return parts.join(' · ') || 'no lane has a target';
   });
   return [

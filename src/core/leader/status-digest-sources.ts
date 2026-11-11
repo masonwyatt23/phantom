@@ -75,7 +75,7 @@ export async function gatherStatusDigestInput(runsDir: string, now: Date, overri
 
   const lanes: Fact<StatusDigestInput['lanes'] extends Fact<infer L> ? L : never> = !runs.ok ? runs
     : runs.value.sources.status !== 'healthy' ? { ok: false, reason: runs.value.runsDirPresent ? 'queue/status.json missing or invalid' : 'runs dir missing' }
-      : { ok: true, value: runs.value.lanes.map(({ lane, running, target, held, heldReason }) => ({ lane, running, target, held, heldReason })) };
+      : { ok: true, value: runs.value.lanes.map(({ lane, running, target, held, heldReason, queued }) => ({ lane, running, target, held, heldReason, queued })) };
 
   const needsFact = await fact(() => {
     const result = src.needs(runsDir);
