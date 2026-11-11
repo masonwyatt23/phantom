@@ -99,6 +99,8 @@ export interface HandoffBusReceiveOptions {
   cwd?: string;
   /** Optional bounded worker runtime in milliseconds, forwarded to the runner unchanged. */
   timeoutMs?: number;
+  /** Programmatic cancellation passed through to the context worker. */
+  signal?: AbortSignal;
   /** Explicit worker argv; nothing is ever derived from message content. */
   argv: readonly string[];
 }
@@ -115,6 +117,7 @@ export async function receiveHandoffBus(opts: HandoffBusReceiveOptions,
   const diagnostic = (text: string): void => { stderr.write(`handoff-receive: ${text}\n`); };
   if (!token(opts.id) || !token(opts.to) ||
       !isAbsolute(opts.snapshot) || opts.snapshot.includes('\0') ||
+      (opts.signal !== undefined && !(opts.signal instanceof AbortSignal)) ||
       (opts.timeoutMs !== undefined &&
         (!Number.isSafeInteger(opts.timeoutMs) || opts.timeoutMs < 1 || opts.timeoutMs > 3600000)) ||
       !opts.argv[0] || opts.argv.some(arg => typeof arg !== 'string' || arg.includes('\0'))) {
@@ -164,7 +167,7 @@ export async function receiveHandoffBus(opts: HandoffBusReceiveOptions,
       return 1;
     }
     return await runContextWorker({ snapshot: snapshotPath, prompt: promptPath, cwd: opts.cwd,
-      timeoutMs: opts.timeoutMs, argv: [...opts.argv] }, io);
+      timeoutMs: opts.timeoutMs, signal: opts.signal, argv: [...opts.argv] }, io);
   } finally {
     await rm(dir, { recursive: true, force: true }).catch(() => undefined);
   }
