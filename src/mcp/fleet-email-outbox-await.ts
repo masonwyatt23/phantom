@@ -67,6 +67,7 @@ export async function readFleetEmailOutboxAwait(
   signal?: AbortSignal,
   deps: FleetEmailOutboxAwaitDeps = {},
 ): Promise<FleetEmailOutboxAwaitReport> {
+  const started = Date.now();
   const readConfig = deps.readConfig ?? readEmailDropConfig;
   const awaitPoll = deps.await ?? awaitEmailOutbox;
   const base = {
@@ -80,13 +81,29 @@ export async function readFleetEmailOutboxAwait(
     ({ ...base, sourceState, state: null, reason: null, timedOut: false, cancelled: false, ...extra });
 
   if (signal?.aborted) return report('unobserved', { cancelled: true });
-  let config: Awaited<ReturnType<typeof readEmailDropConfig>>;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let onAbort: (() => void) | undefined;
+  const boundary = new Promise<'cancelled' | 'timedOut'>((resolve) => {
+    onAbort = () => resolve('cancelled');
+    signal?.addEventListener('abort', onAbort, { once: true });
+    timer = setTimeout(() => resolve('timedOut'), Math.max(0, input.timeoutMs - (Date.now() - started)));
+  });
+  let config: Awaited<ReturnType<typeof readEmailDropConfig>> | 'cancelled' | 'timedOut';
   try {
-    config = await readConfig(deps.runsDir ?? join(homedir(), '.ashlr-runs'));
+    config = await Promise.race([
+      Promise.resolve().then(() => readConfig(deps.runsDir ?? join(homedir(), '.ashlr-runs'))),
+      boundary,
+    ]);
   } catch {
+    if (signal?.aborted) return report('unobserved', { cancelled: true });
+    if (Date.now() - started >= input.timeoutMs) return report('unobserved', { timedOut: true });
     return report('invalid-config', { reason: 'source-failure' });
+  } finally {
+    clearTimeout(timer);
+    if (onAbort) signal?.removeEventListener('abort', onAbort);
   }
-  if (signal?.aborted) return report('unobserved', { cancelled: true });
+  if (signal?.aborted || config === 'cancelled') return report('unobserved', { cancelled: true });
+  if (config === 'timedOut' || Date.now() - started >= input.timeoutMs) return report('unobserved', { timedOut: true });
   if (config.state !== 'ok' || !config.config) {
     return report(config.state === 'missing' ? 'missing-config' : 'invalid-config', { reason: 'source-failure' });
   }
@@ -99,10 +116,13 @@ export async function readFleetEmailOutboxAwait(
   }
   if (sourceState !== 'ok') return report(sourceState, { reason: 'source-failure' });
 
+  if (signal?.aborted) return report('unobserved', { cancelled: true });
+  const remaining = input.timeoutMs - (Date.now() - started);
+  if (remaining <= 0) return report('unobserved', { timedOut: true });
   const result: AwaitResult = await awaitPoll({
     dir: outboxDir,
     name: input.name,
-    timeoutMs: input.timeoutMs,
+    timeoutMs: remaining,
     pollMs: input.pollMs ?? DEFAULT_FLEET_EMAIL_OUTBOX_AWAIT_POLL_MS,
     signal: signal ?? new AbortController().signal,
   });
