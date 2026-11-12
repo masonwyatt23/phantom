@@ -29,6 +29,7 @@ import { handleApi, drainSseConnections, drainSseSession, invalidateWebReadCache
 import { createReadProjectionWorker, type ReadProjectionReader } from './read-projections.js';
 import { governReadProjections } from './read-projection-governor.js';
 import { createReadSessionBoundary, headerValue, isAllowedHost, requestUrl, safeEqual, sendJson } from './read-session.js';
+import { handleUiSettingsApi, UI_SETTINGS_PATH } from './ui-settings-api.js';
 import { isPhoneShellPath, serveStatic } from './static.js';
 import { gcRunStreams } from '../run/streaming.js';
 import { resetVerseEngine } from '../verse/verse-api.js';
@@ -193,6 +194,19 @@ export async function startServer(
     if (process.env.ASHLR_PHANTOM_DISCOVERY === '1' && method === 'GET') {
       if (path === PHANTOM_DISCOVERY_PATH) { sendJson(res, 200, phantomManifest); return; }
       if (path === PHANTOM_PING_PATH) { sendJson(res, 200, { ok: true }); return; }
+    }
+
+    // ── GET/PUT /api/ui-settings ────────────────────────────────────────────
+    // The operator's appearance + layout preferences, stored in ~/.ashlr/ui.json
+    // (src/core/ui-settings.ts). The file is the source of truth; the UI and
+    // agents edit the same document. Mounted here rather than inside handleApi
+    // so the settings modules stay out of the Tier-1 authority import closure;
+    // GETs have already passed the read-session boundary and PUT applies its
+    // own --allow-dispatch + mutation-token gates inside the handler.
+    if (path === UI_SETTINGS_PATH) {
+      handleUiSettingsApi({ token, allowDispatch: opts.allowDispatch }, req, res, method)
+        .catch(() => { if (!res.headersSent) sendJson(res, 500, { error: 'internal error' }); });
+      return;
     }
 
     // ── 2. API routes ──────────────────────────────────────────────────────
