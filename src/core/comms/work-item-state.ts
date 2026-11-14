@@ -24,20 +24,30 @@ const FUTURE_SKEW_MS = 5 * 60 * 1000;
 const text = (v: unknown): v is string => typeof v === 'string' && v.trim() !== '';
 const stamped = (v: unknown): v is string => text(v) && !Number.isNaN(Date.parse(v));
 
+/** A timestamp further ahead of `nowIso` than FUTURE_SKEW_MS cannot prove its
+ * branch. An unparseable clock or timestamp is never eligible: without a
+ * valid reference the skew check cannot run, so nothing time-relative is
+ * trusted. Historical timestamps of any age remain eligible. */
+const withinFutureSkew = (at: string, nowIso: string): boolean => {
+  const t = Date.parse(at);
+  const now = Date.parse(nowIso);
+  return !Number.isNaN(t) && !Number.isNaN(now) && t - now <= FUTURE_SKEW_MS;
+};
+
 export function classifyWorkItem(e: WorkItemEvidence, nowIso: string): WorkItemClassification {
   const v = e.verified;
-  if (v && text(v.source) && stamped(v.at)
+  if (v && text(v.source) && stamped(v.at) && withinFutureSkew(v.at, nowIso)
     && ((typeof v.pr === 'number' && Number.isInteger(v.pr) && v.pr > 0 && text(v.head)) || text(v.tests) || text(v.artifact))) {
     return { state: 'VERIFIED', asOf: v.at, source: v.source, missing: [] };
   }
   const b = e.blocker;
-  if (b && text(b.dependency) && b.dependency.trim().toLowerCase() !== 'unknown' && text(b.source) && stamped(b.at)) {
+  if (b && text(b.dependency) && b.dependency.trim().toLowerCase() !== 'unknown' && text(b.source) && stamped(b.at) && withinFutureSkew(b.at, nowIso)) {
     return { state: 'BLOCKED', asOf: b.at, source: b.source, missing: [] };
   }
   const r = e.runningEvidence;
   const hasRunning = !!r && text(r.source) && stamped(r.at);
   const age = hasRunning ? Date.parse(nowIso) - Date.parse(r.at) : NaN;
-  if (hasRunning && age <= RUNNING_FRESH_MS && age >= -FUTURE_SKEW_MS) {
+  if (hasRunning && age <= RUNNING_FRESH_MS && withinFutureSkew(r.at, nowIso)) {
     return { state: 'RUNNING', asOf: r.at, source: r.source, missing: [] };
   }
 
