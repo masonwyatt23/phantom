@@ -17,8 +17,9 @@ it('appends counts then a BLOCKED line after the digest', async () => {
   expect(lines[0]).toBe('Phantom status, 15:27 ET');
   expect(lines[1]).toContain('Shipped');
   expect(lines[2]).toBe('Work items as of 15:27 ET: 1 BLOCKED, 1 RUNNING, 1 ASSIGNED, 1 RECEIVED, 1 VERIFIED');
-  expect(lines[3]).toBe('BLOCKED fake-id-0000 (slack)');
-  expect(lines[4]).toBe('RECEIVED fake-recv-00 (slack): missing named owner');
+  expect(lines[3]).toBe('Owned work: none with claim + execution evidence');
+  expect(lines[4]).toBe('BLOCKED fake-id-0000 (slack)');
+  expect(lines[5]).toBe('RECEIVED fake-recv-00 (slack): missing named owner');
 });
 
 it('prints one unknown line, never zero counts, for an unreadable inbox', async () => {
