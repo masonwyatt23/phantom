@@ -25,6 +25,9 @@ interface WorkBoardItemView {
   asOf: string;
   source: string;
   missing: string[];
+  /** Optional at runtime: older builds omit owner/claimReceipt. */
+  owner?: string | null;
+  claimReceipt?: string | null;
 }
 
 interface WorkBoardResponse {
@@ -50,6 +53,11 @@ function formatItemAge(receivedAt: string, now: number): string {
   if (s < 3600) return `${Math.floor(s / 60)}m`;
   if (s < 86400) return `${Math.floor(s / 3600)}h`;
   return `${Math.floor(s / 86400)}d`;
+}
+
+function ownerNote(items: WorkBoardItemView[]): string {
+  const n = items.filter((i) => typeof i.owner === 'string' && i.owner !== '').length;
+  return n === 0 ? 'No item has a named owner yet' : `${n} of ${items.length} items have a named owner`;
 }
 
 export function WorkBoardSection({ visible }: { visible: boolean }) {
@@ -79,10 +87,13 @@ export function WorkBoardSection({ visible }: { visible: boolean }) {
           ))}
         </ul>
         {data.items.length > 0 ? (
+          <p className={styles.note}>{ownerNote(data.items)}</p>
+        ) : null}
+        {data.items.length > 0 ? (
           <table className={styles.table}>
             <thead>
               <tr>
-                <th scope="col">State</th><th scope="col">Id</th><th scope="col">Channel</th>
+                <th scope="col">State</th><th scope="col">Owner</th><th scope="col">Claim</th><th scope="col">Id</th><th scope="col">Channel</th>
                 <th scope="col">Ref</th><th scope="col">Age</th><th scope="col">Missing</th>
               </tr>
             </thead>
@@ -90,6 +101,10 @@ export function WorkBoardSection({ visible }: { visible: boolean }) {
               {data.items.map((item) => (
                 <tr key={item.id}>
                   <td><span className={styles.workChip} data-state={item.state}>{item.state}</span></td>
+                  <td>{item.owner ? item.owner : 'unknown'}</td>
+                  <td className={styles.mono} title={item.claimReceipt || undefined}>
+                    {item.claimReceipt ? item.claimReceipt.slice(-16) : 'none'}
+                  </td>
                   <td className={styles.mono} title={item.id}>{item.id.slice(0, 12)}</td>
                   <td>{item.channel}</td>
                   <td className={styles.mono}>{item.channelRef ?? 'none'}</td>

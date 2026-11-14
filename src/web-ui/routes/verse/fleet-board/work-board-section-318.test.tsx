@@ -60,7 +60,9 @@ it('renders state counts and rows, even with no Leader board', async () => {
   const rows = screen.getAllByRole('row');
   const blocked = rows.find((r) => within(r).queryByText('wi-fake-bloc'))!;
   expect(within(blocked).getByText('named owner')).toBeInTheDocument();
-  expect(within(blocked).getByText('none')).toBeInTheDocument();
+  // channelRef 'none' plus claim 'none' (this fixture predates owner/claim keys).
+  expect(within(blocked).getAllByText('none')).toHaveLength(2);
+  expect(within(blocked).getByText('unknown', { selector: 'td' })).toBeInTheDocument();
   expect(within(blocked).getByText('5m')).toBeInTheDocument();
   expect(within(blocked).getByTitle('wi-fake-blocked-0001')).toBeInTheDocument();
   expect(screen.queryByText('should not show')).not.toBeInTheDocument();
