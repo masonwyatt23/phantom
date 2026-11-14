@@ -2015,6 +2015,40 @@ export async function handleApi(
       return true;
     }
 
+    // ── GET /api/fleet/work-board ────────────────────────────────────────
+    // RQ-PHX-WORKBOARDAPI318: the RECEIVED / ASSIGNED / RUNNING / BLOCKED /
+    // VERIFIED coordination board `phm fleet work-board --json` prints, for
+    // the desktop app. `limit` (integer 1..100; anything else falls back to
+    // the default) and `thread` (exact channel_ref; 400 when over 512 chars
+    // or carrying a control character). The root is always the default
+    // <ashlr home>/fleet and is never taken from the request. READ-ONLY: no
+    // writes, no locks, no message bodies; never throws (an import failure
+    // answers 200 with inbox 'unavailable'). Same no-auth read class as
+    // /api/fleet/lanes. Deliberately NOT on the remote-gateway allowlist.
+    if (path === '/api/fleet/work-board' && method === 'GET') {
+      const rawLimit = getQueryParam(req.url ?? '', 'limit');
+      const limit = rawLimit !== undefined && /^\d+$/.test(rawLimit) && Number(rawLimit) >= 1
+        && Number(rawLimit) <= 100 ? Number(rawLimit) : undefined;
+      const thread = getQueryParam(req.url ?? '', 'thread');
+      // eslint-disable-next-line no-control-regex -- rejecting control chars is the point
+      if (thread !== undefined && (thread.length > 512 || /[\x00-\x1f\x7f]/.test(thread))) {
+        sendJson(res, 400, { error: 'invalid thread' });
+        return true;
+      }
+      const now = Date.now();
+      const asOf = new Date(now).toISOString();
+      try {
+        const { listWorkBoard } = await import('../comms/work-board.js');
+        const { ashlrHome } = await import('../cloud/store.js');
+        const { join } = await import('node:path');
+        const board = listWorkBoard({ root: join(ashlrHome(), 'fleet'), now, limit, channelRef: thread });
+        sendJson(res, 200, { ...board, asOf });
+      } catch {
+        sendJson(res, 200, { items: [], inbox: 'unavailable', truncated: false, asOf });
+      }
+      return true;
+    }
+
     // ── GET /api/fleet/lanes ─────────────────────────────────────────────
     // RQ-PHANTOM-ENG-CONSOLE: per-lane engineering console projection —
     // credit left, queue depth, live jobs and merges/hour per router lane,
