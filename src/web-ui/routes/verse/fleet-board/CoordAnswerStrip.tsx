@@ -12,6 +12,8 @@ import { channelHealthQuery } from '../fleet-channels/channel-health-query.js';
 import { narrowChannelHealth, type ChannelHealthView } from '../fleet-channels/channel-health-model.js';
 import { runtimeIdentityQuery } from '../fleet-host/runtime-identity-query.js';
 import type { RuntimeIdentityView } from '../fleet-host/runtime-identity-model.js';
+import { tailnetPeersQuery } from '../fleet-host/tailnet-peers-query.js';
+import type { TailnetPeersView } from '../fleet-host/tailnet-peers-model.js';
 import { deriveCoordAnswer, type CoordBoardView } from './coord-answer-model.js';
 import { coordinationClaimsQuery, type CoordLedgerView } from './coordination-claims-query.js';
 import { deriveRecheckLine, recheckVerdictQuery } from './recheck-verdict-query.js';
@@ -23,13 +25,15 @@ export function CoordAnswerStrip({ visible }: { visible: boolean }) {
   const channels = useQuery(channelHealthQuery, { enabled: visible, freshMs: 0 });
   const board = useQuery(workBoardQuery, { enabled: visible, freshMs: 0 });
   const ledger = useQuery(coordinationClaimsQuery, { enabled: visible, freshMs: 0 });
+  const tailnet = useQuery(tailnetPeersQuery, { enabled: visible, freshMs: 0 });
   const recheck = useQuery(recheckVerdictQuery, { enabled: visible, freshMs: 0 });
   const refetchRuntime = useRefetch(runtimeIdentityQuery);
   const refetchChannels = useRefetch(channelHealthQuery);
   const refetchBoard = useRefetch(workBoardQuery);
   const refetchLedger = useRefetch(coordinationClaimsQuery);
+  const refetchTailnet = useRefetch(tailnetPeersQuery);
   const refetchRecheck = useRefetch(recheckVerdictQuery);
-  usePollWhileVisible(() => { refetchRuntime(); refetchChannels(); refetchBoard(); refetchLedger(); refetchRecheck(); }, 15_000, { enabled: visible });
+  usePollWhileVisible(() => { refetchRuntime(); refetchChannels(); refetchBoard(); refetchLedger(); refetchTailnet(); refetchRecheck(); }, 15_000, { enabled: visible });
 
   // undefined = the read has not settled; null/{available:false} = settled as
   // unavailable (missing route or failed read) — never conflated with loading.
@@ -41,12 +45,16 @@ export function CoordAnswerStrip({ visible }: { visible: boolean }) {
   const boardView: CoordBoardView | null | undefined =
     board.data === undefined && board.status === 'error' ? null : board.data;
 
+  // Evidence only: a settled error is 'not on this build', never loading.
+  const tailnetView: TailnetPeersView | null | undefined =
+    tailnet.data === undefined && tailnet.status === 'error' ? null : tailnet.data;
+
   // A failed (non-404) ledger read is shown as unreadable, not as loading.
   const ledgerView: CoordLedgerView | null | undefined =
     ledger.data === undefined && ledger.status === 'error'
       ? { state: 'unknown', generatedAt: null, claims: [], expiredClaims: null } : ledger.data;
 
-  const answer = deriveCoordAnswer({ runtime: runtimeView, channels: channelsView, board: boardView, ledger: ledgerView, now: Date.now() });
+  const answer = deriveCoordAnswer({ runtime: runtimeView, channels: channelsView, board: boardView, ledger: ledgerView, tailnet: tailnetView, now: Date.now() });
 
   // Additional server evidence only; never feeds deriveCoordAnswer's verdict.
   const recheckLine = deriveRecheckLine(

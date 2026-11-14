@@ -5,10 +5,15 @@
  * LIVE bridge to Dot, one task with a named owner/claim. REACHABLE only when
  * the runtime fleet state is not stale, the work-board inbox is 'ok' and at
  * least one channel is LIVE. Unknown inputs print 'unknown', never 0 / fake OK.
+ *
+ * RQ-PHX-COORDSTRIPCOMPUTERS352: the `Computers` row (tailnet peers this host
+ * sees online) is EVIDENCE ONLY. It never changes verdict, missing,
+ * exampleTask or lastVerified, and `tailnet` does not count toward LOADING.
  */
 import { formatRelative } from '../autonomy/format.js';
 import { formatAge, type RuntimeIdentityView } from '../fleet-host/runtime-identity-model.js';
 import type { CoordLedgerView } from './coordination-claims-query.js';
+import { summarizePeers, type TailnetPeersView } from '../fleet-host/tailnet-peers-model.js';
 import type { ChannelHealthRow, ChannelHealthView } from '../fleet-channels/channel-health-model.js';
 
 export type CoordVerdict = 'REACHABLE' | 'BLOCKED' | 'LOADING';
@@ -57,6 +62,8 @@ export interface CoordAnswerInput {
   board: CoordBoardView | null | undefined;
   /** Advisory claims ledger — evidence only; never affects the verdict. */
   ledger?: CoordLedgerView | null;
+  /** Tailnet peers — evidence only; never affects verdict, missing or LOADING. */
+  tailnet?: TailnetPeersView | null;
   now: number;
 }
 
@@ -74,7 +81,7 @@ function newestFirst(a: CoordBoardItem, b: CoordBoardItem): number {
   return rank(b) - rank(a);
 }
 
-export function deriveCoordAnswer({ runtime, channels, board, ledger, now }: CoordAnswerInput): CoordAnswer {
+export function deriveCoordAnswer({ runtime, channels, board, ledger, tailnet, now }: CoordAnswerInput): CoordAnswer {
   const missing: string[] = [];
   const rows: CoordAnswerRow[] = [];
   const row = (label: string, value: string, ok: boolean | 'unknown') => rows.push({ label, value, ok });
@@ -93,6 +100,17 @@ export function deriveCoordAnswer({ runtime, channels, board, ledger, now }: Coo
     if (fs.stale === true) missing.push('fleet state is stale');
     else if (fs.stale === 'unknown') missing.push('fleet state staleness is unknown');
     runtimeFresh = fs.stale === false;
+  }
+
+  if (tailnet === undefined) row('Computers', 'unknown', 'unknown');
+  else if (tailnet === null) row('Computers', 'not on this build', 'unknown');
+  else {
+    const { online, offline, unknown } = summarizePeers(tailnet);
+    const parts = [`${online} online`, `${offline} offline`];
+    if (unknown > 0) parts.push(`${unknown} unknown`);
+    parts.push(`self ${tailnet.self}`, `as of ${formatRelative(tailnet.asOf, now)}`);
+    if (tailnet.reasons.length > 0) parts.push(tailnet.reasons[0]!);
+    row('Computers', parts.join(' · '), online >= 1 ? true : tailnet.peers.length === 0 ? 'unknown' : false);
   }
 
   let inboxOk = false;
