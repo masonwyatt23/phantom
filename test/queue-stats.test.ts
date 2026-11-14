@@ -90,6 +90,33 @@ describe('queue estimator synthetic arrival properties', () => {
     expect(() => estimateQueueStats([], NaN)).toThrow();
     expect(estimateQueueStats([], 0).stations).toEqual([]);
   });
+
+  it('isolates station and pool groups while preserving snapshot identity and window order', () => {
+    const visits: QueueVisit[] = [
+      { id: 'shared', station: 'b', pool: 'x', arrivedAt: 1000 },
+      { id: 'shared', station: 'a', pool: 'x', arrivedAt: 2000, startedAt: 3000 },
+      { id: 'shared', station: 'b', pool: 'y', arrivedAt: 3000, startedAt: 4000, completedAt: 5000 },
+      { id: 'shared', station: 'b', pool: 'x', arrivedAt: 1000, startedAt: 6000, completedAt: 10000 },
+      { id: 'future', station: 'future', pool: 'future', arrivedAt: 10000 },
+    ];
+    const report = estimateQueueStats(visits, 10000, [5000, 10000, 5000]);
+    expect(report.stations.map(g => g.station)).toEqual(['a', 'b']);
+    expect(report.pools.map(g => g.pool)).toEqual(['x', 'y']);
+    for (const group of [...report.stations, ...report.pools]) {
+      expect(group.windows.map(w => w.windowMs)).toEqual([5000, 10000, 5000]);
+      expect(group.windows[0]).toEqual(group.windows[2]);
+      expect(new Set(group.windows.map(w => w.currentWip)).size).toBe(1);
+      expect(new Set(group.windows.map(w => w.currentQueueLength)).size).toBe(1);
+    }
+    const b = report.stations[1]!.windows[0]!;
+    expect(b).toMatchObject({ arrivals: 0, departures: 1, currentWip: 0, currentQueueLength: 0,
+      lambda: 0, mu: 1, wait: 1, queueLength: 0.2, wip: 1 });
+    expect(b.littleLaw.W).toBe(2);
+    const x = report.pools[0]!.windows[1]!;
+    expect(x).toMatchObject({ arrivals: 2, departures: 0, currentWip: 1, currentQueueLength: 0,
+      wait: null, mu: null, queueLength: 0.6, wip: 1.7 });
+    expect(estimateQueueStats(visits, 10000, []).stations.map(g => g.windows)).toEqual([[], []]);
+  });
 });
 
 it('CLI emits JSON and validates options before reading', async () => {

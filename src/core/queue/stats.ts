@@ -29,33 +29,62 @@ export function estimateQueueStats(visits: readonly QueueVisit[], now: number, w
   // Canonical order makes floating-point sums independent of journal arrival order.
   const all = [...latest.entries()].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)
     .map(([, visit]) => visit).filter(v => v.arrivedAt < now);
-  const groups = (key: 'station' | 'pool') => [...new Set(all.map(v => v[key]))].sort().map(name => ({
-    [key]: name,
-    windows: windows.map(windowMs => {
-      const rows = all.filter(v => v[key] === name);
-      const since = now - windowMs;
-      const seconds = windowMs / 1000;
-      const within = (t: number | undefined): t is number => t !== undefined && t >= since && t < now;
-      const overlap = (start: number, end: number) => Math.max(0, Math.min(now, end) - Math.max(since, start)) / 1000;
-      const arrivals = rows.filter(v => within(v.arrivedAt)).length;
-      const done = rows.filter(v => within(v.completedAt));
-      const serviceSeconds = done.reduce((sum, v) => sum + (v.completedAt! - v.startedAt!) / 1000, 0);
-      const lambda = arrivals / seconds;
-      const mu = serviceSeconds > 0 ? done.length / serviceSeconds : null;
-      const wait = done.length ? done.reduce((sum, v) => sum + (v.startedAt! - v.arrivedAt) / 1000, 0) / done.length : null;
-      const W = done.length ? done.reduce((sum, v) => sum + (v.completedAt! - v.arrivedAt) / 1000, 0) / done.length : null;
-      const L = rows.reduce((sum, v) => sum + overlap(v.arrivedAt, v.completedAt ?? now), 0) / seconds;
-      const queueLength = rows.reduce((sum, v) => sum + overlap(v.arrivedAt, v.startedAt ?? now), 0) / seconds;
-      const expectedL = W === null ? null : lambda * W;
-      const drift = expectedL === null ? null : L === 0 && expectedL === 0 ? 0 : L === 0 ? 1 : Math.abs(L - expectedL) / L;
+  const groups = (key: 'station' | 'pool') => {
+    // Preserve canonical visit order within each group without rescanning all
+    // visits for every name and window. Current counts do not depend on window.
+    const grouped = new Map<string, QueueVisit[]>();
+    for (const visit of all) {
+      const name = visit[key];
+      const rows = grouped.get(name);
+      if (rows) rows.push(visit);
+      else grouped.set(name, [visit]);
+    }
+    return [...grouped.keys()].sort().map(name => {
+      const rows = grouped.get(name)!;
+      const currentQueueLength = rows.filter(v => v.startedAt === undefined || v.startedAt > now).length;
+      const currentWip = rows.filter(v => v.completedAt === undefined || v.completedAt > now).length;
       return {
-        windowMs, since, until: now, arrivals, departures: done.length, lambda, mu,
-        rho: mu === null ? null : lambda / mu, queueLength, wait, wip: L,
-        currentQueueLength: rows.filter(v => v.arrivedAt <= now && (v.startedAt === undefined || v.startedAt > now)).length,
-        currentWip: rows.filter(v => v.completedAt === undefined || v.completedAt > now).length,
-        littleLaw: { L, W, lambdaW: expectedL, drift, flagged: drift === null ? null : drift > 0.2 },
+        [key]: name,
+        windows: windows.map(windowMs => {
+          const since = now - windowMs;
+          const seconds = windowMs / 1000;
+          const within = (t: number | undefined): t is number => t !== undefined && t >= since && t < now;
+          const overlap = (start: number, end: number) => Math.max(0, Math.min(now, end) - Math.max(since, start)) / 1000;
+          let arrivals = 0;
+          let departures = 0;
+          let serviceSeconds = 0;
+          let waitSeconds = 0;
+          let residenceSeconds = 0;
+          let occupancySeconds = 0;
+          let queuedSeconds = 0;
+          for (const v of rows) {
+            if (within(v.arrivedAt)) arrivals++;
+            if (within(v.completedAt)) {
+              departures++;
+              serviceSeconds += (v.completedAt - v.startedAt!) / 1000;
+              waitSeconds += (v.startedAt! - v.arrivedAt) / 1000;
+              residenceSeconds += (v.completedAt - v.arrivedAt) / 1000;
+            }
+            occupancySeconds += overlap(v.arrivedAt, v.completedAt ?? now);
+            queuedSeconds += overlap(v.arrivedAt, v.startedAt ?? now);
+          }
+          const lambda = arrivals / seconds;
+          const mu = serviceSeconds > 0 ? departures / serviceSeconds : null;
+          const wait = departures ? waitSeconds / departures : null;
+          const W = departures ? residenceSeconds / departures : null;
+          const L = occupancySeconds / seconds;
+          const queueLength = queuedSeconds / seconds;
+          const expectedL = W === null ? null : lambda * W;
+          const drift = expectedL === null ? null : L === 0 && expectedL === 0 ? 0 : L === 0 ? 1 : Math.abs(L - expectedL) / L;
+          return {
+            windowMs, since, until: now, arrivals, departures, lambda, mu,
+            rho: mu === null ? null : lambda / mu, queueLength, wait, wip: L,
+            currentQueueLength, currentWip,
+            littleLaw: { L, W, lambdaW: expectedL, drift, flagged: drift === null ? null : drift > 0.2 },
+          };
+        }),
       };
-    }),
-  }));
+    });
+  };
   return { schemaVersion: 1, generatedAt: now, units: { rates: 'per-second', durations: 'seconds' }, stations: groups('station'), pools: groups('pool') };
 }
