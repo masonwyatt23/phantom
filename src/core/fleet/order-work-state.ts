@@ -8,10 +8,16 @@
  *   when the caller passes a live-worker snapshot (`live`): a launched or
  *   published job whose id has a live worker gets `runningEvidence` stamped
  *   at the snapshot's time;
- * - the trace carries no dependency edge, so `blocker` is never set and
- *   BLOCKED stays unreachable. */
+ * - the trace carries no dependency edge, so BLOCKED is reachable only from
+ *   parked-queue evidence the caller passes (`queue`, see
+ *   order-queue-blockers.ts): a most-advanced job that is still `queued` and
+ *   that the queue lists as parked gets `blocker` stamped at the queue's
+ *   time. The queue's lists are bounded, so absence from them means "not
+ *   known blocked", never "unblocked". Launched, published or merged jobs are
+ *   never marked blocked. */
 import { parseOrderAt } from '../../cli/fleet-orders.js';
 import { classifyWorkItem, type WorkItemClassification, type WorkItemEvidence } from '../comms/work-item-state.js';
+import type { QueueBlockers } from './order-queue-blockers.js';
 import type { OrderTraceJob, OrderTraceV1 } from './order-trace.js';
 
 export type TraceOrder = OrderTraceV1['orders'][number];
@@ -50,15 +56,20 @@ export function pullRequest(url: string | null): { url: string; pr: number } | n
  * owner (the routed lane) but never a durable claim receipt. Launched or
  * published jobs are real claims (owner + job id) and report running when
  * the caller's live snapshot names the job id; merged jobs additionally
- * verify the order when the trace recorded a github pull URL. */
-export function orderEvidence(order: TraceOrder, traceGeneratedAt: string, live?: LiveJobIds): WorkItemEvidence {
+ * verify the order when the trace recorded a github pull URL. A queued job
+ * the caller's parked-queue snapshot lists is BLOCKED on that queue text. */
+export function orderEvidence(order: TraceOrder, traceGeneratedAt: string, live?: LiveJobIds, queue?: QueueBlockers): WorkItemEvidence {
   const evidence: WorkItemEvidence = { id: order.key };
   const received = parseOrderAt(order.at);
   if (received !== null) evidence.receivedAt = new Date(received).toISOString();
   const job = mostAdvancedJob(order);
   if (job === undefined) return evidence;
   if (job.lane !== null) evidence.owner = job.lane;
-  if (job.state === 'queued') return evidence;
+  if (job.state === 'queued') {
+    const dependency = queue?.byJob.get(job.id);
+    if (queue !== undefined && dependency !== undefined) evidence.blocker = { dependency, source: 'fleet-queue', at: queue.at };
+    return evidence;
+  }
   evidence.claimReceipt = job.id;
   if (job.state !== 'merged') {
     if ((job.state === 'launched' || job.state === 'published') && live?.jobIds.has(job.id)) {
@@ -73,6 +84,8 @@ export function orderEvidence(order: TraceOrder, traceGeneratedAt: string, live?
   return evidence;
 }
 
-export function classifyOrder(order: TraceOrder, generatedAt: string, nowIso: string, live?: LiveJobIds): WorkItemClassification {
-  return classifyWorkItem(orderEvidence(order, generatedAt, live), nowIso);
+export function classifyOrder(
+  order: TraceOrder, generatedAt: string, nowIso: string, live?: LiveJobIds, queue?: QueueBlockers,
+): WorkItemClassification {
+  return classifyWorkItem(orderEvidence(order, generatedAt, live, queue), nowIso);
 }
