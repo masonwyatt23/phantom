@@ -9,6 +9,7 @@ import { ashlrHome } from '../core/cloud/store.js';
 import { listWorkBoard, WORK_BOARD_DEFAULT_LIMIT, WORK_BOARD_MAX_LIMIT } from '../core/comms/work-board.js';
 import { readFleetRunsDirState } from '../core/fleet/runs-dir-state.js';
 import { readChannelHealth } from '../core/fleet/channel-health.js';
+import { readFleetBoard } from '../core/fleet/coordination.js';
 import { defaultRuntimeIdentityDeps, readRuntimeIdentity, sanitizeIdentityText } from '../core/fleet/runtime-identity.js';
 import { scrubPrivateText } from '../core/util/scrub.js';
 import { MAX_FLEET_TICKS, MAX_FLEET_BUS_HOPS, readFleetLoop, readFleetStatus, readFleetBusHops } from './fleet.js';
@@ -123,6 +124,48 @@ async function readFleetWorkBoard(input: FleetWorkBoardArgs) {
   return { ...board, asOf: new Date(now).toISOString() };
 }
 
+export interface FleetCoordinationBoardArgs {
+  /** Exact owner/name repo filter for claims and proposals; omitted keeps every repo. */
+  repo?: string;
+  /** Exact agent id: claims they hold, messages to them or 'all', proposals for them. */
+  agent?: string;
+}
+
+const COORDINATION_BOARD_ARG_KEYS = new Set(['repo', 'agent']);
+/** The same shapes the coordination ledger itself validates (its REPO and ID). */
+const COORDINATION_REPO = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}\/[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$/;
+const COORDINATION_AGENT = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+
+/** Runtime argument validation: low-level SDK servers never check the
+ * tools/list schema, so unknown keys — including any caller path, root, cwd or
+ * ledger argument — and malformed repo/agent filters are rejected before the
+ * ledger is touched. The board always reads the server-owned default
+ * fleetCoordinationPath(). */
+function parseFleetCoordinationBoardArgs(args: Record<string, unknown>): FleetCoordinationBoardArgs | null {
+  const repo = args['repo'], agent = args['agent'];
+  if (Object.keys(args).some(key => !COORDINATION_BOARD_ARG_KEYS.has(key)) ||
+    repo === null || agent === null ||
+    repo !== undefined && (typeof repo !== 'string' || !COORDINATION_REPO.test(repo)) ||
+    agent !== undefined && (typeof agent !== 'string' || !COORDINATION_AGENT.test(agent))) return null;
+  return { repo: repo as string | undefined, agent: agent as string | undefined };
+}
+
+/** One board read through the canonical readFleetBoard — the same scrubbed
+ * replay as `ashlr fleet coordination board`, never a second reader — scoped by
+ * repo/agent with the invocation clock stamped as `asOf`. An 'unknown' state
+ * passes through with its empty lists, never rewritten into a known board. */
+async function readFleetCoordinationBoard(input: FleetCoordinationBoardArgs) {
+  const now = Date.now();
+  const board = readFleetBoard({ now });
+  if (board.state !== 'known') return { ...board, asOf: new Date(now).toISOString() };
+  const { repo, agent } = input;
+  return { ...board,
+    claims: board.claims.filter(claim => (repo === undefined || claim.repo === repo) && (agent === undefined || claim.agent === agent)),
+    messages: board.messages.filter(message => repo === undefined && (agent === undefined || message.to === agent || message.to === 'all')),
+    proposals: board.proposals.filter(proposal => (repo === undefined || proposal.repo === repo) && (agent === undefined || proposal.to === agent)),
+    asOf: new Date(now).toISOString() };
+}
+
 /** Same bound as the verse comms-status API uses for the bridge health read. */
 const CHANNEL_HEALTH_TIMEOUT_MS = 5_000;
 
@@ -174,6 +217,7 @@ export interface FleetReaders {
   hostRuns?: () => Promise<unknown>;
   busInbox?: (input: FleetBusInboxArgs) => Promise<unknown>;
   workBoard?: (input: FleetWorkBoardArgs) => Promise<unknown>;
+  coordinationBoard?: (input: FleetCoordinationBoardArgs) => Promise<unknown>;
   runtimeIdentity?: () => Promise<unknown>;
   channelHealth?: () => Promise<unknown>;
   lanes?: () => Promise<unknown>;
@@ -303,6 +347,19 @@ export function createFleetServer(readers: FleetReaders = { status: readFleetSta
         properties: {
           limit: { type: 'integer', minimum: 1, maximum: WORK_BOARD_MAX_LIMIT, default: 20 },
           thread: { type: 'string', maxLength: 512, description: 'Exact channel_ref filter such as a Slack <team>/<channel>/<threadTs>.' },
+        },
+        additionalProperties: false,
+      },
+      annotations,
+    },
+    {
+      name: 'fleet_coordination_board',
+      description: 'Read the host coordination ledger board (fleet.coordination.v1): live claims with holder agent, repo, task and expiry, agent-to-agent messages, and assignment proposals — the same readFleetBoard listing as `ashlr fleet coordination board`, never a second reader. Claims and proposals are evidence only and grant no execution, dispatch, claim or merge authority; a claim never authorizes work and a proposal never spawns an agent. Optional `repo` keeps claims and proposals for one exact owner/name (messages carry no repo and are omitted) and optional `agent` keeps claims held by, messages addressed to (or broadcast `all`), and proposals assigned to that exact id — the same scoping as `ashlr fleet coordination inbox`. Lease secrets are never returned: claim rows carry no lease or lease hash. An unreadable, missing or unsafe ledger reports state "unknown" with empty lists, never an invented known board. Reads the server-owned default ledger path only — no caller path, root, cwd or ledger argument is accepted — and the tool never writes, claims, releases, renews, hands off or posts anything.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          repo: { type: 'string', pattern: '^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}/[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$', description: 'Exact owner/name filter for claims and proposals.' },
+          agent: { type: 'string', pattern: '^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$', description: 'Exact agent id: claims they hold, messages to them or all, proposals for them.' },
         },
         additionalProperties: false,
       },
@@ -765,7 +822,7 @@ export function createFleetServer(readers: FleetReaders = { status: readFleetSta
   server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
     const { name, arguments: args = {} } = request.params;
     // Low-level SDK servers do not validate arguments against tools/list schemas.
-    if (name !== 'fleet_staging_inventory' && name !== 'fleet_staging_inventory_retry' && name !== 'fleet_staging_inventory_batch' && name !== 'fleet_status' && name !== 'fleet_loop' && name !== 'fleet_bus_hops' && name !== 'fleet_host_runs' && name !== 'fleet_bus_inbox' && name !== 'fleet_work_board' && name !== 'fleet_runtime_identity' && name !== 'fleet_channel_health' && name !== 'fleet_lanes' && name !== 'fleet_usage_resets' && name !== 'fleet_reset_history' && name !== 'fleet_reset_await' && name !== 'fleet_reset_group_await' && name !== 'fleet_reset_release_await' && name !== 'fleet_reset_follow' && name !== 'fleet_job_history' && name !== 'fleet_job_history_batch' && name !== 'fleet_job_current_batch' && name !== 'fleet_job_current' && name !== 'fleet_job_current_snapshot' && name !== 'fleet_job_patch' && name !== 'fleet_job_overlap' && name !== 'fleet_path_history' && name !== 'fleet_path_cochanges' && name !== 'fleet_job_precheck' && name !== 'fleet_job_precheck_batch' && name !== 'fleet_main_health' && name !== 'fleet_waste_risk' && name !== 'fleet_kept' && name !== 'fleet_trim' && name !== 'fleet_email_outbox' && name !== 'fleet_email_outbox_await' && name !== 'fleet_email_outbox_batch_await' && name !== 'fleet_email_diagnosis' && name !== 'fleet_gmail_triage_latest' && name !== 'fleet_disk_forecast' && name !== 'fleet_gmail_archive_plan_latest' && name !== 'fleet_comms_inbox' && name !== 'fleet_comms_readiness' && name !== 'fleet_imessage_path' && name !== 'fleet_imessage_acks' && name !== 'fleet_ci_resume_inputs' && name !== 'fleet_ci_receipt_await' && name !== 'fleet_ci_receipt_await_batch' && name !== 'fleet_release_candidate' && name !== 'fleet_intent_read' && name !== 'fleet_self_tick_last') {
+    if (name !== 'fleet_staging_inventory' && name !== 'fleet_staging_inventory_retry' && name !== 'fleet_staging_inventory_batch' && name !== 'fleet_status' && name !== 'fleet_loop' && name !== 'fleet_bus_hops' && name !== 'fleet_host_runs' && name !== 'fleet_bus_inbox' && name !== 'fleet_work_board' && name !== 'fleet_coordination_board' && name !== 'fleet_runtime_identity' && name !== 'fleet_channel_health' && name !== 'fleet_lanes' && name !== 'fleet_usage_resets' && name !== 'fleet_reset_history' && name !== 'fleet_reset_await' && name !== 'fleet_reset_group_await' && name !== 'fleet_reset_release_await' && name !== 'fleet_reset_follow' && name !== 'fleet_job_history' && name !== 'fleet_job_history_batch' && name !== 'fleet_job_current_batch' && name !== 'fleet_job_current' && name !== 'fleet_job_current_snapshot' && name !== 'fleet_job_patch' && name !== 'fleet_job_overlap' && name !== 'fleet_path_history' && name !== 'fleet_path_cochanges' && name !== 'fleet_job_precheck' && name !== 'fleet_job_precheck_batch' && name !== 'fleet_main_health' && name !== 'fleet_waste_risk' && name !== 'fleet_kept' && name !== 'fleet_trim' && name !== 'fleet_email_outbox' && name !== 'fleet_email_outbox_await' && name !== 'fleet_email_outbox_batch_await' && name !== 'fleet_email_diagnosis' && name !== 'fleet_gmail_triage_latest' && name !== 'fleet_disk_forecast' && name !== 'fleet_gmail_archive_plan_latest' && name !== 'fleet_comms_inbox' && name !== 'fleet_comms_readiness' && name !== 'fleet_imessage_path' && name !== 'fleet_imessage_acks' && name !== 'fleet_ci_resume_inputs' && name !== 'fleet_ci_receipt_await' && name !== 'fleet_ci_receipt_await_batch' && name !== 'fleet_release_candidate' && name !== 'fleet_intent_read' && name !== 'fleet_self_tick_last') {
       throw new McpError(ErrorCode.InvalidParams, 'Unknown fleet tool.');
     }
     if (args == null || typeof args !== 'object' || Array.isArray(args)) {
@@ -779,6 +836,7 @@ export function createFleetServer(readers: FleetReaders = { status: readFleetSta
     const limit = args['limit'] ?? 20;
     const inbox = name === 'fleet_bus_inbox' ? parseFleetBusInboxArgs(args) : null;
     const workBoard = name === 'fleet_work_board' ? parseFleetWorkBoardArgs(args) : null;
+    const coordinationBoard = name === 'fleet_coordination_board' ? parseFleetCoordinationBoardArgs(args) : null;
     const history = name === 'fleet_reset_history' ? parseFleetResetHistoryArgs(args) : null;
     const resetGroupAwait = name === 'fleet_reset_group_await' ? parseFleetResetGroupAwaitArgs(args) : null;
     const resetAwait = name === 'fleet_reset_await' ? parseFleetResetAwaitArgs(args) : null;
@@ -813,6 +871,7 @@ export function createFleetServer(readers: FleetReaders = { status: readFleetSta
     const selfTickLastArgs = name === 'fleet_self_tick_last' ? parseFleetSelfTickLastArgs(args) : null;
     const releaseCandidate = name === 'fleet_release_candidate' ? parseFleetReleaseCandidateArgs(args) : null;
     if (name === 'fleet_work_board' ? workBoard === null :
+        name === 'fleet_coordination_board' ? coordinationBoard === null :
         name === 'fleet_intent_read' ? intentRead === null :
         name === 'fleet_self_tick_last' ? selfTickLastArgs === null :
         name === 'fleet_release_candidate' ? releaseCandidate === null :
@@ -905,6 +964,7 @@ export function createFleetServer(readers: FleetReaders = { status: readFleetSta
         : name === 'fleet_intent_read' ? await (readers.intentRead ?? readFleetIntent)(intentRead as FleetIntentReadArgs)
         : name === 'fleet_release_candidate' ? await (readers.releaseCandidate ?? readFleetReleaseCandidate)(releaseCandidate as FleetReleaseCandidateArgs)
         : name === 'fleet_work_board' ? await (readers.workBoard ?? readFleetWorkBoard)(workBoard as FleetWorkBoardArgs)
+        : name === 'fleet_coordination_board' ? await (readers.coordinationBoard ?? readFleetCoordinationBoard)(coordinationBoard as FleetCoordinationBoardArgs)
         : await (readers.busInbox ?? readFleetBusInbox)(inbox as FleetBusInboxArgs);
       // Scrub values before serialization: redaction regexes operate on prose
       // and may consume JSON quotes if applied to already serialized bytes.
