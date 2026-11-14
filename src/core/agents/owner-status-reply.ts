@@ -5,6 +5,8 @@ import { gatherStatusDigestInput } from '../leader/status-digest-sources.js';
 import { join } from 'node:path';
 import { ashlrHome } from '../cloud/store.js';
 import { listWorkBoard, type WorkBoardResult } from '../comms/work-board.js';
+import { formatCoordinationClaimsLine } from '../comms/coordination-claims-line.js';
+import { readFleetBoard, type FleetBoard } from '../fleet/coordination.js';
 import { summarizeWorkBoard, WORK_BOARD_UNKNOWN_LINE } from '../comms/work-board-summary.js';
 
 /** The five-line digest from real state; the heading is swapped for the clock below. */
@@ -32,6 +34,21 @@ export interface OwnerStatusDeps {
    * owner-status-runtime-line.ts). Opt-in: the Slack socket wiring passes
    * defaultRuntimeLine; absent or throwing means no line, never a failure. */
   runtime?: (now: Date) => Promise<string>;
+  /** Advisory coordination-ledger read (pass defaultClaims for the real ledger).
+   * Opt-in like `runtime`, so existing callers' replies stay byte-identical;
+   * when present, a throwing seam becomes the "unknown" claims line. */
+  claims?: (now: Date) => FleetBoard;
+}
+
+export const defaultClaims = (now: Date): FleetBoard => readFleetBoard({ now: now.getTime() });
+const UNKNOWN_BOARD: FleetBoard = { schema: 'fleet.coordination.v1', state: 'unknown', claims: [], messages: [], proposals: [], expiredClaims: null };
+
+/** The claims line is evidence, not a gate: a failed read only becomes "unknown". */
+function claimsLine(now: Date, seam: OwnerStatusDeps['claims']): string {
+  if (seam === undefined) return '';
+  let board: FleetBoard;
+  try { board = seam(now); } catch { board = UNKNOWN_BOARD; }
+  try { return formatCoordinationClaimsLine(board, now); } catch { return formatCoordinationClaimsLine(UNKNOWN_BOARD, now); }
 }
 
 const defaultBoard = (now: Date): WorkBoardResult => listWorkBoard({ root: join(ashlrHome(), 'fleet'), now: now.getTime(), limit: 20 });
@@ -51,20 +68,22 @@ async function runtimeLine(now: Date, seam: OwnerStatusDeps['runtime']): Promise
 
 /** Never throws: a failed read still tells the owner where the ask went.
  * The digest has priority: the runtime line sits directly under the heading;
- * work-board lines are dropped last-first, then the runtime line, never the
- * digest. */
+ * work-board lines are dropped last-first, then the claims line, then the
+ * runtime line, never the digest. */
 export async function composeOwnerStatusReply(runsDir: string, now: Date, deps: OwnerStatusDeps = {}): Promise<string> {
   try {
     const brief = await (deps.brief ?? digestBrief)(runsDir, now);
     const text = brief.replace(/^Morning leader brief/, `Phantom status, ${easternClock(now)} ET`);
     const [heading, ...digestRest] = text.split('\n');
     const runtime = await runtimeLine(now, deps.runtime);
+    const claims = claimsLine(now, deps.claims);
     const lines = workLines(now, deps.board);
-    const assemble = (withRuntime: boolean): string =>
-      [heading, ...(withRuntime && runtime !== '' ? [runtime] : []), ...digestRest, ...lines].join('\n');
-    while (lines.length > 0 && assemble(true).length > MAX_REPLY_CHARS) lines.pop();
-    const full = assemble(true);
-    const dropped = runtime !== '' && full.length > MAX_REPLY_CHARS ? assemble(false) : full;
+    const assemble = (withClaims: boolean, withRuntime: boolean): string =>
+      [heading, ...(withRuntime && runtime !== '' ? [runtime] : []), ...(withClaims && claims !== '' ? [claims] : []), ...digestRest, ...lines].join('\n');
+    while (lines.length > 0 && assemble(true, true).length > MAX_REPLY_CHARS) lines.pop();
+    let dropped = assemble(true, true);
+    if (dropped.length > MAX_REPLY_CHARS) dropped = assemble(false, true);
+    if (dropped.length > MAX_REPLY_CHARS && runtime !== '') dropped = assemble(false, false);
     return dropped.length > MAX_REPLY_CHARS ? `${dropped.slice(0, MAX_REPLY_CHARS - 1)}…` : dropped;
   } catch { return OWNER_STATUS_FALLBACK; }
 }
