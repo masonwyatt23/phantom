@@ -9,6 +9,8 @@
 import { execFile } from 'node:child_process';
 import { hostname } from 'node:os';
 import { join } from 'node:path';
+import { isSlackChannelId, isSlackTs } from '../agents/slack-network.js';
+import { bindSlackReplies, type InboundRequest, type SentReceipt } from '../agents/slack-reply-binding.js';
 import { buildSlackBridgeStatus } from '../agents/slack-status.js';
 import { readSlackJournal } from '../agents/slack-journal.js';
 import { ashlrHome } from '../cloud/store.js';
@@ -24,10 +26,11 @@ export interface ChannelProof {
   /**
    * 'idle': no pending inbound inside the window -- a LIVE state then proves
    *   process and configuration health only, never that a request was answered.
-   * 'unproven': pending inbound exists but no source binds a reply receipt to
-   *   the request it answers, so later outbound can never clear it.
-   * 'verified': reserved for sources that return per-request reply bindings;
-   *   no current source provides them.
+   * 'unproven': pending inbound remains that no same-thread sent receipt could
+   *   be bound to (or the source cannot bind replies at all).
+   * 'verified': every recent request carried a validated identity and bound a
+   *   distinct same-thread 'sent' receipt. Observed same-thread reply
+   *   coverage only -- never named ownership, dispatch or completion.
    */
   requestCoverage: 'idle' | 'unproven' | 'verified';
   /** Receipt observations dated after `asOf`; excluded from evidence entirely. */
@@ -57,6 +60,14 @@ export interface InboundObservation {
   /** ISO receive time. */
   at: string;
   admission?: InboundAdmission;
+  /**
+   * Validated request identity when the observation store retains it (Slack
+   * journal rows post-335). All three must validate for reply binding; rows
+   * lacking them stay uncorrelated and can never be cleared by activity.
+   */
+  channelId?: string;
+  messageTs?: string;
+  threadTs?: string;
 }
 
 export interface InboundEvidence {
@@ -100,8 +111,18 @@ export interface ChannelSource {
    * durableIngress counts are invented for them.
    */
   inboundEvidence?(): Promise<InboundEvidence> | InboundEvidence;
-  /** Reply receipt times (ISO), any order. Activity observations only -- no source binds a reply to a specific inbound. */
+  /** Reply receipt times (ISO), any order. Activity observations only -- replyReceipts() below is what binds a reply to a specific inbound. */
   replies(): Promise<string[]> | string[];
+  /**
+   * Optional richer reply read: per-receipt channel/thread/ts evidence for
+   * one-to-one same-thread binding via bindSlackReplies. When present together
+   * with inboundEvidence, requests carrying a validated identity are cleared
+   * only by a distinct 'sent' receipt in their own thread; 'attempted',
+   * top-level, wrong-thread and malformed receipts can never clear pending
+   * work. Throwing marks the receipt source unreadable (UNKNOWN), same as
+   * replies().
+   */
+  replyReceipts?(): Promise<SentReceipt[]> | SentReceipt[];
 }
 
 export interface ChannelHealthDeps {
@@ -124,17 +145,52 @@ function pgrep(pattern: string): Promise<boolean | 'unknown'> {
 }
 
 const isoOrNull = (ms: number): string | null => (Number.isFinite(ms) ? new Date(ms).toISOString() : null);
+const record = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
 
-/** Slack sent-receipt `ts` is epoch seconds; the store prunes after expiry, so this is recent evidence only. */
-function slackReplyTimes(): string[] {
+/**
+ * Raw rows of the Slack sent store `{version, messages: {<hash>: receipt}}`:
+ * each receipt carries channel/thread/ts evidence set by deliverSlackEnvelope.
+ * A missing store is empty evidence; a truncated or unparseable one is
+ * unreadable and throws.
+ */
+function slackSendStoreRows(): unknown[] {
   const read = readPrivateFileCapped(join(ashlrHome(), 'fleet', 'slack-transport', 'messages.json'), 1024 * 1024);
   if (read === null) return [];
   if (read.truncated) throw new Error('slack-receipts-unreadable');
-  const data = JSON.parse(read.text) as { messages?: Record<string, { state?: string; ts?: string }> };
+  const data = JSON.parse(read.text) as { messages?: Record<string, unknown> };
+  return Object.values(data.messages ?? {});
+}
+
+/** Slack sent-receipt `ts` is epoch seconds; the store prunes after expiry, so this is recent evidence only. */
+function slackReplyTimes(receipts: unknown[]): string[] {
   const out: string[] = [];
-  for (const receipt of Object.values(data.messages ?? {})) {
-    const at = receipt?.state === 'sent' && typeof receipt.ts === 'string' ? isoOrNull(Number(receipt.ts) * 1000) : null;
+  for (const receipt of receipts) {
+    const at = record(receipt) && receipt.state === 'sent' && typeof receipt.ts === 'string'
+      ? isoOrNull(Number(receipt.ts) * 1000) : null;
     if (at) out.push(at);
+  }
+  return out;
+}
+
+/**
+ * Reply receipts that pass the binder's own validation shape: a real channel,
+ * an 'attempted'/'sent' state and well-formed optional thread/ts. Malformed
+ * rows drop here exactly as bindSlackReplies would reject them.
+ */
+function slackReplyReceipts(receipts: unknown[]): SentReceipt[] {
+  const out: SentReceipt[] = [];
+  for (const receipt of receipts) {
+    if (!record(receipt) || (receipt.state !== 'attempted' && receipt.state !== 'sent') ||
+        !isSlackChannelId(receipt.channel) ||
+        (receipt.ts !== undefined && !isSlackTs(receipt.ts)) ||
+        (receipt.thread !== undefined && !isSlackTs(receipt.thread))) continue;
+    out.push({
+      channel: receipt.channel,
+      state: receipt.state,
+      ...(isSlackTs(receipt.thread) ? { thread: receipt.thread } : {}),
+      ...(isSlackTs(receipt.ts) ? { ts: receipt.ts } : {}),
+    });
   }
   return out;
 }
@@ -148,34 +204,48 @@ function slackInboundEvidence(runsDir?: string): InboundEvidence {
     store: 'ok',
     rows: journal.entries
       .filter((e) => e.decision === 'ingested')
-      .map((e) => ({ at: e.at, ...(e.bus ? { admission: e.bus } : {}) })),
+      .map((e) => ({
+        at: e.at,
+        ...(e.bus ? { admission: e.bus } : {}),
+        ...(e.channelId ? { channelId: e.channelId } : {}),
+        ...(e.messageTs ? { messageTs: e.messageTs } : {}),
+        ...(e.threadTs ? { threadTs: e.threadTs } : {}),
+      })),
+  };
+}
+
+/** Default Slack source; the sent store is read once per channel-health pass and shared between the activity and binding projections. */
+function slackSource(runsDir?: string): ChannelSource {
+  let rows: unknown[] | null = null;
+  const storeRows = (): unknown[] => (rows ??= slackSendStoreRows());
+  return {
+    configMissing: () => {
+      const status = buildSlackBridgeStatus(runsDir ? { runsDir } : {});
+      const missing: string[] = [];
+      if (status.config.state !== 'ok') missing.push('slack agent-network config');
+      else if (status.slackSection !== 'ok') missing.push('slack config section');
+      else {
+        if (status.credentials.botTokenRef === null) missing.push('slack bot token reference');
+        if (status.credentials.appTokenRef === null) missing.push('slack app token reference');
+        if (status.mappings.length === 0) missing.push('slack channel mapping');
+      }
+      return missing;
+    },
+    processAlive: () => pgrep('channels slack run'),
+    inbound: () => {
+      const evidence = slackInboundEvidence(runsDir);
+      if (evidence.store !== 'ok') throw new Error('slack-journal-unreadable');
+      return evidence.rows.map((r) => r.at);
+    },
+    inboundEvidence: () => slackInboundEvidence(runsDir),
+    replies: () => slackReplyTimes(storeRows()),
+    replyReceipts: () => slackReplyReceipts(storeRows()),
   };
 }
 
 function defaultSources(runsDir?: string): Record<ChannelName, ChannelSource> {
   return {
-    slack: {
-      configMissing: () => {
-        const status = buildSlackBridgeStatus(runsDir ? { runsDir } : {});
-        const missing: string[] = [];
-        if (status.config.state !== 'ok') missing.push('slack agent-network config');
-        else if (status.slackSection !== 'ok') missing.push('slack config section');
-        else {
-          if (status.credentials.botTokenRef === null) missing.push('slack bot token reference');
-          if (status.credentials.appTokenRef === null) missing.push('slack app token reference');
-          if (status.mappings.length === 0) missing.push('slack channel mapping');
-        }
-        return missing;
-      },
-      processAlive: () => pgrep('channels slack run'),
-      inbound: () => {
-        const evidence = slackInboundEvidence(runsDir);
-        if (evidence.store !== 'ok') throw new Error('slack-journal-unreadable');
-        return evidence.rows.map((r) => r.at);
-      },
-      inboundEvidence: () => slackInboundEvidence(runsDir),
-      replies: slackReplyTimes,
-    },
+    slack: slackSource(runsDir),
     imessage: {
       configMissing: () => (commsEnabled(loadConfigReadOnlyStrict()) ? [] : ['imessage comms configuration']),
       processAlive: () => pgrep('imessage (poll|watch|run)|ashlr-imessage|imsg|textbot'),
@@ -216,6 +286,7 @@ async function readOne(channel: ChannelName, src: ChannelSource, now: Date, host
   }
   if (base.processAlive === true) base.runtimeHost = host;
   let inbound: number[], replies: number[], evidence: InboundEvidence | null = null;
+  let receipts: SentReceipt[] | null = null;
   try {
     if (src.inboundEvidence) {
       evidence = await src.inboundEvidence();
@@ -224,6 +295,7 @@ async function readOne(channel: ChannelName, src: ChannelSource, now: Date, host
       inbound = (await src.inbound()).map(ms).filter(Number.isFinite).sort((a, b) => a - b);
     }
     replies = (await src.replies()).map(ms).filter(Number.isFinite).sort((a, b) => a - b);
+    receipts = src.replyReceipts ? await src.replyReceipts() : null;
   } catch {
     return { ...base, state: 'UNKNOWN', missing: [`${channel} receipt source unreadable`] };
   }
@@ -232,14 +304,49 @@ async function readOne(channel: ChannelName, src: ChannelSource, now: Date, host
   const validReplies = replies.filter((t) => t <= nowMs);
   base.lastInboundAt = validInbound.length ? isoOrNull(validInbound[validInbound.length - 1]!) : null;
   base.lastReplyAt = validReplies.length ? isoOrNull(validReplies[validReplies.length - 1]!) : null;
-  // Timestamp order is activity evidence only: no current source binds a reply
-  // receipt to the inbound it answers, so a later reply can never clear a
-  // pending inbound. Future-dated observations are rejected as evidence.
-  const pending = validInbound.filter((t) => nowMs - t <= INBOUND_WINDOW_MS);
   const observedReplies = validReplies.length;
   const futureDated = inbound.filter((t) => t > nowMs).length + replies.filter((t) => t > nowMs).length;
+  // Timestamp order alone is activity evidence only. When the source returns
+  // validated request identity plus reply receipts, bindSlackReplies clears
+  // each recent request with a distinct later same-thread 'sent' receipt:
+  // repeated deliveries of one message collapse into a single request and
+  // rows without a usable identity stay uncorrelated rather than
+  // disappearing. Future-dated observations are rejected as evidence.
+  let pending: number[];
+  let coverage: ChannelProof['requestCoverage'];
+  let boundChecked = false;
+  let awaitingReply = 0;
+  let uncorrelated = 0;
+  if (evidence !== null && evidence.store === 'ok' && receipts !== null) {
+    boundChecked = true;
+    const deduped = new Map<string, InboundRequest>();
+    const legacyTimes: number[] = [];
+    for (const row of evidence.rows) {
+      const t = ms(row.at);
+      if (!Number.isFinite(t) || t > nowMs || nowMs - t > INBOUND_WINDOW_MS) continue;
+      const { channelId, messageTs, threadTs } = row;
+      if (typeof channelId === 'string' && typeof messageTs === 'string' && typeof threadTs === 'string' &&
+          isSlackChannelId(channelId) && isSlackTs(messageTs) && isSlackTs(threadTs)) {
+        const key = `${channelId} ${threadTs} ${messageTs}`;
+        const previous = deduped.get(key);
+        if (previous === undefined) deduped.set(key, { at: row.at, channelId, messageTs, threadTs });
+        else if (t < ms(previous.at)) previous.at = row.at;
+      } else {
+        legacyTimes.push(t);
+      }
+    }
+    const binding = bindSlackReplies({ requests: [...deduped.values()], receipts, now });
+    pending = binding.unanswered.map((r) => ms(r.at)).filter(Number.isFinite);
+    awaitingReply = pending.length;
+    uncorrelated = legacyTimes.length;
+    pending.push(...legacyTimes);
+    coverage = deduped.size + legacyTimes.length === 0 ? 'idle' : pending.length === 0 ? 'verified' : 'unproven';
+  } else {
+    pending = validInbound.filter((t) => nowMs - t <= INBOUND_WINDOW_MS);
+    coverage = pending.length ? 'unproven' : 'idle';
+  }
   base.unansweredCount = pending.length;
-  const proof: ChannelProof = { requestCoverage: pending.length ? 'unproven' : 'idle', futureDatedCount: futureDated };
+  const proof: ChannelProof = { requestCoverage: coverage, futureDatedCount: futureDated };
   // Durable-admission tally over the same recent window that can block LIVE.
   // Rows without an outcome (legacy) are 'unverified': they neither prove a
   // successful durable enqueue nor convict one. A 'failed' row is positive
@@ -271,7 +378,8 @@ async function readOne(channel: ChannelName, src: ChannelSource, now: Date, host
     return { ...base, state: 'UNKNOWN', missing: [`${channel} bridge process liveness unverifiable`] };
   }
   const reasons: string[] = [];
-  if (pending.length && observedReplies) reasons.push(`${channel} reply correlation unavailable`);
+  if (awaitingReply && observedReplies) reasons.push(`${channel} request unanswered`);
+  if ((boundChecked ? uncorrelated : pending.length) && observedReplies) reasons.push(`${channel} reply correlation unavailable`);
   if (futureDated) reasons.push(`${channel} future-dated receipt ignored`);
   if (durableFailed) reasons.push(`${channel} durable ingress failed`);
   if (pending.some((t) => nowMs - t > REPLY_GRACE_MS) || durableFailed) {
