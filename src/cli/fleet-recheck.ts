@@ -1,7 +1,8 @@
 /** `ashlr fleet recheck` — one read-only verdict joining the runtime identity,
  * claims ledger, channel health and work board readers into four sections plus
  * an overall state. Text mode prints exactly five physical lines — RUNTIME,
- * CLAIMS, BRIDGE, TASK, OVERALL — each with as-of and source; every
+ * CLAIMS, BRIDGE, TASK, OVERALL — each with as-of and source; last-verified
+ * is evidence only. Every
  * interpolated value is flattened by safePhysicalLine, so observed evidence
  * can never add a line, move the cursor or forge a verdict. Exit 0 only when
  * every section is VERIFIED, 1 otherwise. Read-only: nothing is written, sent
@@ -63,11 +64,9 @@ function textLines(recheck: FleetRecheck): string[] {
       `${channel('slack')} ${channel('imessage')} missing=${bridge.missingBridge ?? 'none'}`),
     line('TASK', task.state, task.asOf, task.source,
       `id=${pick?.id ?? 'none'} state=${pick?.state ?? 'none'} owner=${pick?.owner ?? 'none'} `
-      + `claim=${pick?.claimReceipt ?? 'none'} missing=${task.missing[0] ?? 'none'}`),
-    ...(task.lastVerified === undefined || task.lastVerified === null ? [] : [
-      line('TASK', task.state, task.asOf, task.source,
-        `last verified: ${task.lastVerified.id} owner=${task.lastVerified.owner} at ${task.lastVerified.asOf}`),
-    ]),
+      + `claim=${pick?.claimReceipt ?? 'none'} missing=${task.missing[0] ?? 'none'} `
+      + (task.lastVerified == null ? 'last-verified=none'
+        : `last-verified=${task.lastVerified.id}@${task.lastVerified.asOf} last-verified-owner=${task.lastVerified.owner}`)),
     line('OVERALL', recheck.overall.state, recheck.asOf, 'fleet-recheck',
       `missing=${recheck.overall.missing.length} first=${recheck.overall.missing[0] ?? 'none'}`),
   ];
