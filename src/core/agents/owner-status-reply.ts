@@ -38,6 +38,10 @@ export interface OwnerStatusDeps {
    * owner-status-runtime-line.ts). Opt-in: the Slack socket wiring passes
    * defaultRuntimeLine; absent or throwing means no line, never a failure. */
   runtime?: (now: Date) => Promise<string>;
+  /** One orders-by-state line for Mason's recent inbox orders (see
+   * owner-status-orders-line.ts). Opt-in like `runtime`: absent or throwing
+   * means no line, never a failure; it sits directly after the runtime line. */
+  orders?: (now: Date) => Promise<string>;
   /** The paste-ready fleet recheck verdict for a short "recheck" ask; the
    * default reads the live verdict (readFleetRecheck + formatRecheckReply). */
   recheck?: (now: Date) => Promise<string>;
@@ -74,31 +78,34 @@ function workLines(now: Date, board: OwnerStatusDeps['board']): string[] {
   try { return summarizeWorkBoard((board ?? defaultBoard)(now), now); } catch { return [WORK_BOARD_UNKNOWN_LINE]; }
 }
 
-/** The runtime line is evidence, not a gate: an absent or throwing seam
- * changes nothing else in the reply. One line only — anything after the
- * first newline is dropped so it always sits directly under the heading. */
-async function runtimeLine(now: Date, seam: OwnerStatusDeps['runtime']): Promise<string> {
+/** A seam line is evidence, not a gate: an absent or throwing seam changes
+ * nothing else in the reply. One line only — anything after the first
+ * newline is dropped so it always sits directly under the heading. */
+async function seamLine(now: Date, seam: ((now: Date) => Promise<string>) | undefined): Promise<string> {
   if (seam === undefined) return '';
   try { return (await seam(now)).split('\n', 1)[0]; } catch { return ''; }
 }
 
 /** Never throws: a failed read still tells the owner where the ask went.
- * The digest has priority: the runtime line sits directly under the heading;
- * work-board lines are dropped last-first, then the runtime line, never the
- * digest. */
+ * The digest has priority: the runtime line sits directly under the heading,
+ * the orders line directly under it; work-board lines are dropped last-first,
+ * then the orders line, then the runtime line, never the digest. */
 export async function composeOwnerStatusReply(runsDir: string, now: Date, deps: OwnerStatusDeps = {}): Promise<string> {
   try {
     const brief = await (deps.brief ?? digestBrief)(runsDir, now);
     const text = brief.replace(/^Morning leader brief/, `Phantom status, ${easternClock(now)} ET`);
     const [heading, ...digestRest] = text.split('\n');
-    const runtime = await runtimeLine(now, deps.runtime);
+    const runtime = await seamLine(now, deps.runtime);
+    const orders = await seamLine(now, deps.orders);
     const lines = workLines(now, deps.board);
-    const assemble = (withRuntime: boolean): string =>
-      [heading, ...(withRuntime && runtime !== '' ? [runtime] : []), ...digestRest, ...lines].join('\n');
-    while (lines.length > 0 && assemble(true).length > MAX_REPLY_CHARS) lines.pop();
-    const full = assemble(true);
-    const dropped = runtime !== '' && full.length > MAX_REPLY_CHARS ? assemble(false) : full;
-    return dropped.length > MAX_REPLY_CHARS ? `${dropped.slice(0, MAX_REPLY_CHARS - 1)}…` : dropped;
+    const show = { runtime: runtime !== '', orders: orders !== '' };
+    const assemble = (): string =>
+      [heading, ...(show.runtime ? [runtime] : []), ...(show.orders ? [orders] : []), ...digestRest, ...lines].join('\n');
+    while (lines.length > 0 && assemble().length > MAX_REPLY_CHARS) lines.pop();
+    if (assemble().length > MAX_REPLY_CHARS) show.orders = false;
+    if (assemble().length > MAX_REPLY_CHARS) show.runtime = false;
+    const reply = assemble();
+    return reply.length > MAX_REPLY_CHARS ? `${reply.slice(0, MAX_REPLY_CHARS - 1)}…` : reply;
   } catch { return OWNER_STATUS_FALLBACK; }
 }
 
