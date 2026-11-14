@@ -404,7 +404,7 @@ export async function readReviewPick(options: ReviewPickReadOptions): Promise<Re
 
   const readClaimedTsv = options.readClaimedTsv
     ?? (() => readSource(join(runsDir, 'queue', 'claimed.tsv'), CLAIMED_TSV_MAX_BYTES, false));
-  const [claimed, busWork, board, liveWorkers] = await Promise.all([
+  const [claimed, busWork, board, liveWorkers, prs] = await Promise.all([
     boundedRead(readClaimedTsv, () => ({ state: 'degraded' as const, text: '' }), readTimeoutMs),
     guarded(() => options.inspectBusWork ? options.inspectBusWork() : inspectBusWorkClaims(),
       () => ({ source: 'unavailable' as const, claims: [] })),
@@ -413,15 +413,15 @@ export async function readReviewPick(options: ReviewPickReadOptions): Promise<Re
     boundedRead(() => (options.listWorkers ?? listLiveWorkers)(),
       () => ({ v: 1 as const, generatedAt: isoOf(nowMs), sourceState: 'unavailable' as const, workers: [], leaders: [], orchestratorAgents: 0 }),
       readTimeoutMs),
+    REPO_RE.test(repo)
+      ? boundedRead(() => listOpenReviewPrs(repo, limit, options.gh ?? defaultGh), () => null, readTimeoutMs)
+      : null,
   ]);
   const claims: ReviewPickClaims = {
     claimedTsv: { state: claimed.state, claims: parseClaimedTsv(claimed.text) },
     busWork, board, liveWorkers,
   };
 
-  const prs = REPO_RE.test(repo)
-    ? await boundedRead(() => listOpenReviewPrs(repo, limit, options.gh ?? defaultGh), () => null, readTimeoutMs)
-    : null;
   if (prs === null) {
     const probe = pickUnownedReview({ repo, prs: [], claims, now: nowMs });
     const ownershipDown = probe.source.unavailable.length > 0;
