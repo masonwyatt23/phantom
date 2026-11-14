@@ -1,0 +1,50 @@
+{
+  "Version": "1.80.0",
+  "BackendState": "Running",
+  "AuthURL": "",
+  "TailscaleIPs": ["100.64.0.1"],
+  "Self": {
+    "ID": "nFAKESELF1CNTRL",
+    "PublicKey": "nodekey:fakeselfkey0000",
+    "HostName": "fleet-mac-a",
+    "DNSName": "fleet-mac-a.tailnet-fake.ts.net.",
+    "OS": "macOS",
+    "UserID": 111,
+    "TailscaleIPs": ["100.64.0.1"],
+    "Tags": ["tag:fleet"],
+    "Online": true,
+    "LastSeen": "0001-01-01T00:00:00Z"
+  },
+  "Peer": {
+    "nodekey:fakepeerb0000": {
+      "ID": "nFAKEPEERB1CNTRL",
+      "PublicKey": "nodekey:fakepeerb0000",
+      "HostName": "fleet-mac-b",
+      "DNSName": "fleet-mac-b.tailnet-fake.ts.net.",
+      "OS": "macOS",
+      "UserID": 111,
+      "TailscaleIPs": ["100.64.0.2"],
+      "Online": true,
+      "LastSeen": "2026-11-13T18:00:00Z"
+    },
+    "nodekey:fakepeerc0000": {
+      "ID": "nFAKEPEERC1CNTRL",
+      "PublicKey": "nodekey:fakepeerc0000",
+      "HostName": "fleet-linux-c",
+      "DNSName": "fleet-linux-c.tailnet-fake.ts.net.",
+      "OS": "linux",
+      "UserID": 111,
+      "TailscaleIPs": ["100.64.0.3"],
+      "Tags": ["tag:fleet"],
+      "Online": false,
+      "LastSeen": "2026-11-12T09:30:00Z"
+    },
+    "nodekey:fakepeerd0000": {
+      "HostName": "fleet-mac-d",
+      "OS": "macOS",
+      "TailscaleIPs": ["100.64.0.4"],
+      "Online": true,
+      "LastSeen": "0001-01-01T00:00:00Z"
+    }
+  }
+}
