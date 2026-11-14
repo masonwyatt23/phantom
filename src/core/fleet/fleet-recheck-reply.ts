@@ -17,7 +17,7 @@
 import type { FleetRecheck } from './fleet-recheck.js';
 import { sanitizeIdentityText } from './runtime-identity.js';
 
-/** Hard cap on the whole reply, including the trailing ellipsis when clipped. */
+/** Hard cap on the whole reply, including ellipses and newlines. */
 const REPLY_MAX = 900;
 /** Claims named in the reply; the ledger itself already caps the top list. */
 const TOP_CLAIMS = 3;
@@ -35,6 +35,12 @@ function scrub(value: string): string {
   return sanitizeIdentityText(value.replace(HOME_PATH, '~'), '').replace(FORBIDDEN_WORDS, '[verb]');
 }
 
+/** Scrub before clipping so truncation cannot expose part of a sensitive value. */
+function bounded(value: string, max: number): string {
+  const clean = scrub(value);
+  return clean.length <= max ? clean : `${clean.slice(0, max - 1)}…`;
+}
+
 /** Format a fleet recheck verdict as one paste-ready thread reply. */
 export function formatRecheckReply(r: FleetRecheck): string {
   const { runtime, claims, bridge, task } = r.sections;
@@ -44,24 +50,24 @@ export function formatRecheckReply(r: FleetRecheck): string {
     ? `${runtime.fleetState.ageSeconds}s`
     : 'unknown';
   const top = claims.top.slice(0, TOP_CLAIMS)
-    .map(c => `${scrub(c.agent)}/${scrub(c.repo)}`).join(', ') || 'none';
-  const missing = r.overall.missing.map(scrub).join('; ') || 'no missing detail';
+    .map(c => `${bounded(c.agent, 30)}/${bounded(c.repo, 30)}`).join(', ') || 'none';
   const lines = [
-    `Phantom recheck ${r.overall.state} · as of ${scrub(r.asOf)} · source fleet-recheck`,
-    `Runtime: ${scrub(runtime.host)} · ${scrub(runtime.installedVersion)} · fleet state ${age}`
+    `Phantom recheck ${r.overall.state} · as of ${bounded(r.asOf, 40)} · source fleet-recheck`,
+    `Runtime: ${bounded(runtime.host, 45)} · ${bounded(runtime.installedVersion, 30)} · fleet state ${age}`
       + `${runtime.fleetState.stale === true ? ' · stale' : ''} (${runtime.state})`,
     `Claims: ${claims.active === null ? 'unknown' : claims.active} live, top: ${top} (${claims.state})`,
     `Bridge: slack ${channel('slack')}, imessage ${channel('imessage')}`
-      + `${bridge.missingBridge === null ? '' : ` · missing: ${scrub(bridge.missingBridge)}`} (${bridge.state})`,
+      + `${bridge.missingBridge === null ? '' : ` · missing: ${bounded(bridge.missingBridge, 70)}`} (${bridge.state})`,
     task.task === null
-      ? `Task: none, ${scrub(task.missing[0] ?? 'no task evidence')} (${task.state})`
-      : `Task: ${scrub(task.task.id)} ${task.task.state} · owner ${scrub(task.task.owner)} · claim ${scrub(task.task.claimReceipt)} (${task.state})`,
-    r.overall.state === 'VERIFIED'
-      ? 'Evidence only; this reply grants no dispatch.'
-      : r.overall.state === 'BLOCKED'
-        ? `BLOCKED on: ${missing}`
-        : `UNKNOWN: ${missing}`,
+      ? `Task: none, ${bounded(task.missing[0] ?? 'no task evidence', 70)} (${task.state})`
+      : `Task: ${bounded(task.task.id, 45)} ${task.task.state} · owner ${bounded(task.task.owner, 45)} · claim ${bounded(task.task.claimReceipt, 45)} (${task.state})`,
   ];
-  const text = lines.join('\n');
-  return text.length <= REPLY_MAX ? text : `${text.slice(0, REPLY_MAX - 1)}…`;
+  const evidence = lines.join('\n');
+  if (r.overall.state === 'VERIFIED') {
+    return `${evidence}\nEvidence only; this reply grants no dispatch.`;
+  }
+  const prefix = r.overall.state === 'BLOCKED' ? 'BLOCKED on: ' : 'UNKNOWN: ';
+  const available = REPLY_MAX - evidence.length - 1 - prefix.length;
+  const missing = r.overall.missing.map(scrub).join('; ') || 'no missing detail';
+  return `${evidence}\n${prefix}${missing.length <= available ? missing : `${missing.slice(0, available - 1)}…`}`;
 }
