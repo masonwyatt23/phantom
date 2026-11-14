@@ -29,10 +29,15 @@ export interface OrderStateBody {
   orders: OrderRow[];
 }
 
-export type OrderStateParse = { kind: 'ok'; asOf: string; rows: OrderRow[] } | { kind: 'unavailable' };
+/**
+ * `notes` is present only when non-empty (the 359 suite compares ok bodies with toEqual).
+ * It carries source-health notes: degraded sources, and live/queue checks that did not run.
+ */
+export type OrderStateParse = { kind: 'ok'; asOf: string; rows: OrderRow[]; notes?: string[] } | { kind: 'unavailable' };
 
 export const ORDER_STATE_PATH = '/api/verse/fleet/work-board/orders';
 export const MAX_ORDER_ROWS = 20;
+export const MAX_EVIDENCE_CHARS = 60;
 
 const PR_URL = /^https:\/\/github\.com\/[^/]+\/[^/]+\/pull\/\d+$/;
 const isState = (v: unknown): v is OrderState => typeof v === 'string' && (ORDER_STATES as readonly string[]).includes(v);
@@ -58,7 +63,16 @@ export function parseOrderStateBody(body: unknown): OrderStateParse {
   if (b.v !== 1 || typeof b.asOf !== 'string' || !Array.isArray(b.orders)) return { kind: 'unavailable' };
   const rows: OrderRow[] = [];
   for (const raw of b.orders) { const row = parseRow(raw); if (row) rows.push(row); }
-  return { kind: 'ok', asOf: b.asOf, rows };
+  const notes: string[] = [];
+  if (b.sources && typeof b.sources === 'object' && !Array.isArray(b.sources)) {
+    const bad = Object.entries(b.sources as Record<string, unknown>)
+      .filter(([, v]) => v !== 'healthy')
+      .map(([k, v]) => `${k}=${typeof v === 'string' ? v : 'unknown'}`);
+    if (bad.length > 0) notes.push(`sources degraded: ${bad.join(' ')}`);
+  }
+  if (b.live === 'unavailable') notes.push('RUNNING not checked');
+  if (b.queue === 'unavailable') notes.push('BLOCKED not checked');
+  return notes.length > 0 ? { kind: 'ok', asOf: b.asOf, rows, notes } : { kind: 'ok', asOf: b.asOf, rows };
 }
 
 export interface OrderRowView {
@@ -67,6 +81,7 @@ export interface OrderRowView {
   source: string;
   state: OrderState;
   asOfText: string;
+  evidenceText: string;
   missingText: string;
   prUrl: string | null;
   prLabel: string | null;
@@ -89,6 +104,7 @@ export function orderRowView(row: OrderRow): OrderRowView {
     source: row.source,
     state: row.state,
     asOfText: `as of ${clock(row.asOf)}`,
+    evidenceText: row.evidenceSource.trim().slice(0, MAX_EVIDENCE_CHARS) || 'unknown',
     missingText: row.missing.length > 0 ? row.missing.join(', ') : 'none',
     prUrl: pr,
     prLabel: pr === null ? null : `PR #${pr.slice(pr.lastIndexOf('/') + 1)}`,

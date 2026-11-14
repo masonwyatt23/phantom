@@ -1,6 +1,6 @@
 /**
  * routes/verse/fleet-board/OrderStateStrip.tsx — "Your orders": one read-only
- * row per order (time · source · state · as-of · missing evidence · PR link).
+ * row per order (time · source · state · as-of · evidence · missing evidence · PR link).
  * No buttons, no writes.
  */
 import { useQuery, useRefetch } from '../../../data/hooks.js';
@@ -19,9 +19,18 @@ export function OrderStateStrip({ visible = true }: { visible?: boolean }) {
   let body;
   if (data === undefined && orders.status !== 'error') body = <SkeletonLine width="40%" />;
   else if (data === undefined || data.kind === 'unavailable') body = <p className={styles.orderNote}>Order states unavailable</p>;
-  else if (data.rows.length === 0) body = <p className={styles.orderNote}>No orders in range</p>;
+  else if (data.rows.length === 0) {
+    body = (
+      <>
+        {(data.notes ?? []).map((n) => <p key={n} className={styles.orderNote}>{n}</p>)}
+        <p className={styles.orderNote}>No orders in range</p>
+      </>
+    );
+  }
   else {
     body = (
+      <>
+      {(data.notes ?? []).map((n) => <p key={n} className={styles.orderNote}>{n}</p>)}
       <ul className={styles.orderRows}>
         {data.rows.slice(0, MAX_ORDER_ROWS).map((row, i) => {
           const v = orderRowView(row);
@@ -31,12 +40,14 @@ export function OrderStateStrip({ visible = true }: { visible?: boolean }) {
               <span>{v.source}</span>
               <span className={styles.orderState} data-state={v.state}>{v.state}</span>
               <span>{v.asOfText}</span>
+              <span>{v.evidenceText}</span>
               <span>missing: {v.missingText}</span>
               {v.prUrl ? <a href={v.prUrl} target="_blank" rel="noreferrer noopener">{v.prLabel}</a> : null}
             </li>
           );
         })}
       </ul>
+      </>
     );
   }
   return (
