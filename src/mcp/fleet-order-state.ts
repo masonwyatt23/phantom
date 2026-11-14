@@ -3,20 +3,26 @@
  * over the isolated fleet MCP server, giving MCP-only agents the same order
  * states Mason sees: each inbox order classified RECEIVED / ASSIGNED /
  * RUNNING / BLOCKED / VERIFIED from the real order trace (readOrderTrace)
- * plus one live-worker snapshot (listLiveWorkers), exactly as the verse
+ * plus one live-worker snapshot (listLiveWorkers) and one lane-targets read
+ * (readLaneTargets, the slots.json hold evidence), exactly as the verse
  * work-board/orders API does. Evidence only: it grants no claim, dispatch or
  * merge authority, and a queued line names an owner but is not a claim.
  * The owner names the job carrying the order and is evidence, not a claim.
  *
  * Each read is time-bounded (8 s per reader). A trace read that throws or
- * times out answers sources 'unavailable' with no orders and no live read; a
- * live read that throws or times out leaves live 'unavailable' and RUNNING
- * unproven. Thrown message text, file paths, order text bodies, command
- * lines and pids never cross this boundary.
+ * times out answers sources 'unavailable' with no orders and no live or
+ * lanes read; a live read that throws or times out leaves live
+ * 'unavailable' and RUNNING unproven; a lanes read that throws, times out
+ * or answers a non-'healthy' sourceState leaves lanes 'unavailable', no
+ * blocker key on any row and BLOCKED unproven. Thrown message text, file
+ * paths, order text bodies, command lines, pids, hold reasons and hold
+ * attribution never cross this boundary.
  */
 import { parseOrderAt } from '../cli/fleet-orders.js';
+import { heldLaneBlocker } from '../core/fleet/order-lane-blocker.js';
 import { classifyOrder, mostAdvancedJob, type LiveJobIds } from '../core/fleet/order-work-state.js';
 import { readOrderTrace, type OrderTraceJob, type OrderTraceV1 } from '../core/fleet/order-trace.js';
+import { readLaneTargets, type LaneTargetsV1 } from '../core/fleet/runs-lane-targets.js';
 import { listLiveWorkers, type LiveWorkersSnapshot } from '../core/fleet/runs-live-workers.js';
 import { sanitizePublicJson } from '../core/util/public-json.js';
 
@@ -35,6 +41,10 @@ export interface FleetOrderStateDeps {
   read?: (opts: { now?: () => number }) => Promise<OrderTraceV1>;
   /** Live-worker snapshot reader (default listLiveWorkers). */
   live?: () => Promise<LiveWorkersSnapshot>;
+  /** Lane-targets reader (default readLaneTargets). Read once per call after
+   * the live read; a throw, timeout or non-'healthy' sourceState leaves lanes
+   * 'unavailable' and BLOCKED unproven without failing the call. */
+  lanes?: () => Promise<LaneTargetsV1>;
   /** Clock for asOf and the sinceHours cutoff (default Date.now). */
   now?: () => number;
   /** Per-reader bound in ms (default FLEET_ORDER_STATE_TIMEOUT_MS). */
@@ -92,6 +102,7 @@ export async function readFleetOrderState(deps: FleetOrderStateDeps = {}): Promi
   }
   const read = deps.read ?? ((opts: { now?: () => number }) => readOrderTrace(opts));
   const liveRead = deps.live ?? listLiveWorkers;
+  const lanesRead = deps.lanes ?? readLaneTargets;
   const timeoutMs = deps.timeoutMs ?? FLEET_ORDER_STATE_TIMEOUT_MS;
   const ms = (deps.now ?? Date.now)();
   const nowMs = Number.isSafeInteger(ms) && ms >= 0 ? ms : 0;
@@ -100,7 +111,7 @@ export async function readFleetOrderState(deps: FleetOrderStateDeps = {}): Promi
   try {
     trace = await bounded(() => read({ now: () => nowMs }), timeoutMs);
   } catch {
-    return { v: 1, asOf: nowIso, sources: 'unavailable', live: 'unavailable', orders: [] };
+    return { v: 1, asOf: nowIso, sources: 'unavailable', live: 'unavailable', lanes: 'unavailable', orders: [] };
   }
   let live: LiveJobIds | undefined;
   let liveState: 'healthy' | 'unavailable';
@@ -111,6 +122,15 @@ export async function readFleetOrderState(deps: FleetOrderStateDeps = {}): Promi
   } catch {
     liveState = 'unavailable';
   }
+  // Lane holds are read once per call, after the live read — a held or failed
+  // snapshot is never cached. A throw, timeout or non-'healthy' sourceState
+  // yields no blocker evidence, so BLOCKED is not claimed.
+  let lanes: LaneTargetsV1 | undefined;
+  try {
+    const targets = await bounded(lanesRead, timeoutMs);
+    if (targets.sourceState === 'healthy') lanes = targets;
+  } catch { /* lanes stays undefined: no blocker evidence */ }
+  const lanesState: 'healthy' | 'unavailable' = lanes === undefined ? 'unavailable' : 'healthy';
   let orders = [...trace.orders].sort((a, b) => b.at.localeCompare(a.at));
   if (sinceHours !== undefined) {
     const cutoff = nowMs - sinceHours * 3600_000;
@@ -122,14 +142,22 @@ export async function readFleetOrderState(deps: FleetOrderStateDeps = {}): Promi
     asOf: nowIso,
     sources: trace.sources,
     live: liveState,
+    lanes: lanesState,
     orders: orders.slice(0, FLEET_ORDER_STATE_LIMIT).map((o) => {
-      const c = classifyOrder(o, trace.generatedAt, nowIso, live);
+      const c = classifyOrder(o, trace.generatedAt, nowIso, live, lanes);
       const job = mostAdvancedJob(o);
+      // `blocker` is the sanitized lane dependency (lanes + held-until
+      // timestamp only — never hold reasons or attribution), present on
+      // every row only when healthy lane evidence was read.
+      const blocker = lanes !== undefined
+        ? (c.state === 'BLOCKED' ? heldLaneBlocker(o, lanes)?.dependency ?? null : null)
+        : undefined;
       return {
         at: o.at, source: o.source, key: o.key,
         state: c.state, asOf: c.asOf, evidenceSource: c.source,
         missing: c.missing, pr: job?.url ?? null,
         owner: orderOwner(job),
+        ...(blocker !== undefined ? { blocker } : {}),
       };
     }),
   });
