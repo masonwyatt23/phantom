@@ -8,36 +8,13 @@
 
 import type { RetryPolicy } from '../types.js';
 
-// ---------------------------------------------------------------------------
-// Internal helpers
-// ---------------------------------------------------------------------------
-
 /** Maximum backoff cap in ms — prevents degenerate waits on high maxAttempts. */
 const MAX_DELAY_MS = 30_000;
-
-/**
- * Compute backoff delay for a completed attempt (1-based).
- * delay = min(baseDelayMs * 2^(attempt - 1), MAX_DELAY_MS)
- * attempt=1 → 0 delay (first retry fires immediately after first failure).
- *
- * We define attempt=1 as the first try; the delay before retry attempt N+1
- * is `baseDelayMs * 2^(N-1)` where N is the just-failed attempt number.
- */
-function backoffMs(policy: RetryPolicy, failedAttempt: number): number {
-  // failedAttempt is 1-based. Exponent: 0 on first failure (immediate retry).
-  const exponent = failedAttempt - 1;
-  const raw = policy.baseDelayMs * Math.pow(2, exponent);
-  return Math.min(raw, MAX_DELAY_MS);
-}
 
 /** Sleep without side effects. Await-able, resolves after `ms` milliseconds. */
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
-
-// ---------------------------------------------------------------------------
-// Public API
-// ---------------------------------------------------------------------------
 
 /**
  * Run `fn` with bounded exponential backoff.
@@ -48,35 +25,38 @@ function sleep(ms: number): Promise<void> {
  *   (attempt 1 failure → 0 ms delay before attempt 2 when baseDelayMs is 0, else baseDelayMs).
  * - Rethrows the last error when attempts are exhausted or the error is non-retryable.
  * - Bounded by construction: NEVER loops more than policy.maxAttempts times.
+ * - Snapshots and validates the policy before invoking either callback. Invalid
+ *   attempt limits or delays reject with RangeError before work starts.
  */
 export async function withRetry<T>(
   fn: (attempt: number) => Promise<T>,
   policy: RetryPolicy,
   isRetryable: (e: unknown) => boolean,
 ): Promise<T> {
-  const maxAttempts = Math.max(1, policy.maxAttempts);
-  let lastError: unknown;
+  const { maxAttempts, baseDelayMs } = policy;
+  if (!Number.isSafeInteger(maxAttempts) || maxAttempts < 1) {
+    throw new RangeError('maxAttempts must be a positive safe integer');
+  }
+  if (!Number.isFinite(baseDelayMs) || baseDelayMs < 0) {
+    throw new RangeError('baseDelayMs must be finite and non-negative');
+  }
+  let delay = Math.min(baseDelayMs, MAX_DELAY_MS);
 
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+  for (let attempt = 1; ; attempt++) {
     try {
       return await fn(attempt);
     } catch (err) {
-      lastError = err;
-
-      const isLast = attempt === maxAttempts;
-      if (isLast || !isRetryable(err)) {
-        // Either exhausted all attempts or this error is non-retryable — give up.
-        throw lastError;
+      if (attempt === maxAttempts || !isRetryable(err)) {
+        throw err;
       }
 
       // Wait before the next attempt.
-      const delay = backoffMs(policy, attempt);
       if (delay > 0) {
         await sleep(delay);
       }
+      // Saturating multiplication preserves zero delay even beyond 1,024
+      // attempts, where computing 0 * 2 ** exponent would produce NaN.
+      delay = Math.min(delay * 2, MAX_DELAY_MS);
     }
   }
-
-  // Unreachable (loop always throws or returns), but satisfies TypeScript.
-  throw lastError;
 }

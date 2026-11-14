@@ -343,9 +343,9 @@ export interface RunStreamEvent {
 
 /** Bounded retry policy for a single task. Caps attempts and backoff base. */
 export interface RetryPolicy {
-  /** Maximum number of attempts (>=1; total tries including the first). */
+  /** Positive safe integer; total tries including the first. */
   maxAttempts: number;
-  /** Base delay in ms for exponential backoff between attempts. */
+  /** Finite, non-negative base delay in ms; exponential backoff caps at 30 s. */
   baseDelayMs: number;
 }
 
