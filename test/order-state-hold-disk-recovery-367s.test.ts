@@ -22,25 +22,23 @@
  * held/held_reason/held_by/held_until/last_change, and the hard_cap +
  * last_change_by global keys).
  *
- * Arc: held lane -> lanes 'healthy'; hold lifted -> 'healthy'; slots.json
- * corrupted -> 'unavailable' and the text-mode stderr warning fires once;
- * deleted -> 'unavailable'; restored held -> 'healthy' again. The sibling
- * order keeps its own launched-job claim (ASSIGNED) through every phase —
- * hold state never bleeds across orders — and held_reason, held_by, local
- * paths and fake private metadata never reach stdout/stderr/JSON. Every
- * invocation consumes exactly one fresh trace read, one fresh slots read
- * and one fresh process-table read.
+ * Arc: held lane -> lanes 'healthy' and order A reports BLOCKED on its
+ * held queued lane; hold lifted -> 'healthy' and the order falls back to
+ * RECEIVED; slots.json corrupted -> 'unavailable' and the text-mode stderr
+ * warning fires once; deleted -> 'unavailable'; restored held -> 'healthy'
+ * and BLOCKED again. The sibling order keeps its own launched-job claim
+ * (ASSIGNED) through every phase — hold state never bleeds across orders —
+ * and held_reason, held_by, local paths and fake private metadata never
+ * reach stdout/stderr/JSON. Every invocation consumes exactly one fresh
+ * trace read, one fresh slots read and one fresh process-table read.
  *
- * REAL DEFECT (recorded for the existing owner — the order-lane evidence
- * work in flight as RQ-PHX-ORDERQUEUEDOWNER362): BLOCKED is unreachable
- * through the real readers. readOrderTrace emits `lane: null` for every
- * 'queued' job — the queued lane only exists in queue/ready.tsv, which
- * the trace never reads, while a <id>.launch marker both carries the lane
- * and flips the job to 'launched'. heldLaneBlocker requires
- * state === 'queued' AND lane !== null for every job, so the real queued
- * job on a held lane reports RECEIVED with blocker: null instead of
- * BLOCKED. The smallest reproduction is this file's own fixture; the
- * second test pins the trace's lane: null shape directly.
+ * The gap this file once pinned (recorded for RQ-PHX-ORDERQUEUEDOWNER362)
+ * is closed by RQ-PHX-ORDERQUEUEDLANE368: readOrderTrace used to emit
+ * `lane: null` for every 'queued' job because the routed lane only exists
+ * in queue/ready.tsv, which the trace never read — so heldLaneBlocker's
+ * state === 'queued' AND lane !== null rule could never fire on real data.
+ * The trace now fills a still-queued job's lane from ready.tsv, and the
+ * second test pins that fixed shape directly.
  *
  * Bounds: every path, lane row, process row and timestamp is fake; the
  * temp root is removed in finally. This proves local read recovery of the
@@ -50,6 +48,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cmdFleetOrderState } from '../src/cli/fleet-order-state.js';
+import { classifyOrder } from '../src/core/fleet/order-work-state.js';
 import { readOrderTrace } from '../src/core/fleet/order-trace.js';
 import { readLaneTargets } from '../src/core/fleet/runs-lane-targets.js';
 import { listLiveWorkers } from '../src/core/fleet/runs-live-workers.js';
@@ -109,7 +108,7 @@ const PS_IDLE = [
 interface OrderStateJson {
   v: number;
   generatedAt: string;
-  sources: Record<'inbox' | 'prompts' | 'publishes', string>;
+  sources: Record<'inbox' | 'prompts' | 'publishes' | 'queue', string>;
   live: string;
   lanes: string;
   orders: Array<{
@@ -122,11 +121,14 @@ interface OrderStateJson {
 type OrderStateDeps = NonNullable<Parameters<typeof cmdFleetOrderState>[1]>;
 
 /** Strings that must never survive into any output: hold metadata, local
- * paths and fixture-only private values. `root` and `until` are bound per
- * test because they contain the temp path and the hold-expiry instant. */
+ * paths and fixture-only private values. The held lane's own name and
+ * expiry instant are NOT private — the reporting contract's dependency
+ * deliberately names lanes and timestamps only (order-lane-blocker.ts), so
+ * `lane devin held until <iso>` is the sanctioned BLOCKED output. `root`
+ * stays banned because it is a temp path. */
 const privateTokens = (root: string): string[] => [
   'fake-account', 'fake-operator', 'held_reason', 'held_by', 'held_until',
-  'held until', HELD_UNTIL, root, 'ready.tsv', `${JOB_A}.md`,
+  root, 'ready.tsv', `${JOB_A}.md`,
 ];
 
 /** One real runs root: two inbox orders, order A's queued prompt + the
@@ -188,27 +190,26 @@ describe('fleet order-state hold recovery through real readers', () => {
     try {
       await buildRunsRoot(root, true);
 
-      // Phase 1 — held lane, healthy slots source. ORDERLANEBLOCKED366
-      // intends BLOCKED here; through the real readers the order is
-      // RECEIVED, because the trace gives the queued job lane: null and
-      // heldLaneBlocker requires a non-null lane on a queued job (defect
-      // pinned in the second test). lanes stays 'healthy' — the hold IS
-      // read freshly, it just cannot attach to a lane-less queued job.
+      // Phase 1 — held lane, healthy slots source. The trace picks the
+      // queued job's routed lane up from ready.tsv, heldLaneBlocker's
+      // queued-on-a-held-lane rule fires, and order A reports BLOCKED with
+      // the held lane as its dependency — exactly what ORDERLANEBLOCKED366
+      // intended. lanes stays 'healthy' and the hold is read fresh.
       expect(await run()).toBe(0);
       {
         const j = json();
         expect(j.generatedAt).toBe(NOW_ISO);
-        expect(j.sources).toEqual({ inbox: 'healthy', prompts: 'healthy', publishes: 'healthy' });
+        expect(j.sources).toEqual({ inbox: 'healthy', prompts: 'healthy', publishes: 'healthy', queue: 'healthy' });
         expect(j.live).toBe('healthy');
         expect(j.lanes).toBe('healthy');
         const orders = byKey(j);
         expect(j.orders).toHaveLength(2);
         const a = orders.get(ORDER_A_KEY)!;
-        expect(a.state).toBe('RECEIVED');
-        expect(a.asOf).toBe(ORDER_A_RECEIVED);
-        expect(a.evidenceSource).toBe('receivedAt');
-        expect(a.missing).toEqual(['named owner', 'durable claim receipt']);
-        expect(a.blocker).toBeNull();
+        expect(a.state).toBe('BLOCKED');
+        expect(a.asOf).toBe(NOW_ISO);
+        expect(a.evidenceSource).toBe('slots.json');
+        expect(a.missing).toEqual([]);
+        expect(a.blocker).toBe(`lane ${HELD_LANE} held until ${HELD_UNTIL}`);
         expect(a.pr).toBeNull();
         const b = orders.get(ORDER_B_KEY)!;
         expect(b.state).toBe('ASSIGNED');
@@ -222,10 +223,10 @@ describe('fleet order-state hold recovery through real readers', () => {
       err.mockClear();
 
       // Phase 2 — same held source, text mode: one contract line per
-      // order, no blocked-on, no warnings on stdout or stderr.
+      // order, the blocked-on dependency, no warnings on stdout or stderr.
       expect(await run([])).toBe(0);
       expect(log.mock.calls.map((c) => c[0])).toEqual([
-        `${ORDER_A_AT} Fake slack RECEIVED as-of=${ORDER_A_RECEIVED} source=receivedAt missing=named owner,durable claim receipt`,
+        `${ORDER_A_AT} Fake slack BLOCKED as-of=${NOW_ISO} source=slots.json missing=none blocked-on=lane ${HELD_LANE} held until ${HELD_UNTIL}`,
         `${ORDER_B_AT} Fake slack ASSIGNED as-of=${ORDER_B_RECEIVED} source=claim:${JOB_B} missing=none`,
       ]);
       expect(err).not.toHaveBeenCalled();
@@ -235,7 +236,9 @@ describe('fleet order-state hold recovery through real readers', () => {
 
       // Phase 3 — the hold is lifted (the real unhold pops every held_*
       // key): same reads, no stale blocker survives, order A is still
-      // RECEIVED — a queued job never mints ASSIGNED or RUNNING.
+      // RECEIVED — a queued job never mints ASSIGNED or RUNNING. Its
+      // ready.tsv lane does name the owner now, so only the claim receipt
+      // is still missing.
       await writeFile(join(root, 'queue', 'slots.json'), slots(false));
       expect(await run()).toBe(0);
       {
@@ -243,6 +246,8 @@ describe('fleet order-state hold recovery through real readers', () => {
         expect(j.lanes).toBe('healthy');
         const a = byKey(j).get(ORDER_A_KEY)!;
         expect(a.state).toBe('RECEIVED');
+        expect(a.asOf).toBe(ORDER_A_RECEIVED);
+        expect(a.missing).toEqual(['durable claim receipt']);
         expect(a.blocker).toBeNull();
         expect(byKey(j).get(ORDER_B_KEY)!.state).toBe('ASSIGNED');
         expectClean(root);
@@ -288,16 +293,16 @@ describe('fleet order-state hold recovery through real readers', () => {
       err.mockClear();
 
       // Phase 6 — the held source is restored: the very next read recovers
-      // 'healthy' — no state is pinned between invocations in either
-      // direction — and the sibling is untouched throughout.
+      // 'healthy' and BLOCKED — no state is pinned between invocations in
+      // either direction — and the sibling is untouched throughout.
       await writeFile(join(root, 'queue', 'slots.json'), slots(true));
       expect(await run()).toBe(0);
       {
         const j = json();
         expect(j.lanes).toBe('healthy');
         const a = byKey(j).get(ORDER_A_KEY)!;
-        expect(a.state).toBe('RECEIVED');
-        expect(a.blocker).toBeNull();
+        expect(a.state).toBe('BLOCKED');
+        expect(a.blocker).toBe(`lane ${HELD_LANE} held until ${HELD_UNTIL}`);
         const b = byKey(j).get(ORDER_B_KEY)!;
         expect(b.state).toBe('ASSIGNED');
         expect(b.evidenceSource).toBe(`claim:${JOB_B}`);
@@ -315,13 +320,12 @@ describe('fleet order-state hold recovery through real readers', () => {
     }
   });
 
-  it('pins the real trace gap: the queued job on the held lane reads lane: null', async () => {
-    // The smallest reproduction of the unreachable BLOCKED: with every
+  it('pins the fixed trace shape: the queued job on the held lane reads its ready.tsv lane', async () => {
+    // The smallest reproduction of the once-unreachable BLOCKED: with every
     // real queue artifact in place — the citing prompt, the ready.tsv row
     // naming the held lane and a healthy held slots.json — the real
-    // readOrderTrace still emits the queued job with lane: null, the one
-    // shape heldLaneBlocker deliberately refuses. This is what the
-    // ORDERQUEUEDOWNER evidence work must close for BLOCKED to attach.
+    // readOrderTrace emits the queued job with its routed lane, the one
+    // shape heldLaneBlocker needs, so classifyOrder reports BLOCKED.
     const parent = await mkdtemp(join(tmpdir(), 'order-state-hold-367s-'));
     const root = join(parent, 'runs');
     try {
@@ -330,10 +334,12 @@ describe('fleet order-state hold recovery through real readers', () => {
         readOrderTrace({ runsDir: root, now: () => NOW_MS }),
         readLaneTargets({ runsDir: root, now: () => new Date(NOW_MS) }),
       ]);
-      const jobA = trace.orders.find((o) => o.key === ORDER_A_KEY)?.jobs.find((j) => j.id === JOB_A);
-      expect(jobA).toEqual({ id: JOB_A, lane: null, state: 'queued', url: null });
+      const orderA = trace.orders.find((o) => o.key === ORDER_A_KEY)!;
+      const jobA = orderA.jobs.find((j) => j.id === JOB_A);
+      expect(jobA).toEqual({ id: JOB_A, lane: HELD_LANE, state: 'queued', url: null });
       expect(lanes.sourceState).toBe('healthy');
       expect(lanes.lanes.find((row) => row.lane === HELD_LANE)?.held).toBe(true);
+      expect(classifyOrder(orderA, trace.generatedAt, NOW_ISO, undefined, lanes).state).toBe('BLOCKED');
     } finally {
       await rm(parent, { recursive: true, force: true });
     }
