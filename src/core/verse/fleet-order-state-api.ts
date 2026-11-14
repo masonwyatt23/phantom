@@ -11,7 +11,8 @@
 import type { ApiModule } from './api-modules.js';
 import { sendJson } from '../web/api.js';
 import { parseOrderAt } from '../../cli/fleet-orders.js';
-import { classifyOrder, mostAdvancedJob, type LiveJobIds } from '../fleet/order-work-state.js';
+import { classifyWorkItem } from '../comms/work-item-state.js';
+import { orderEvidence, mostAdvancedJob, type LiveJobIds } from '../fleet/order-work-state.js';
 import { readOrderTrace, type OrderTraceV1 } from '../fleet/order-trace.js';
 import { listLiveWorkers, type LiveWorkersSnapshot } from '../fleet/runs-live-workers.js';
 import { sanitizePublicJson } from '../util/public-json.js';
@@ -22,7 +23,8 @@ const LIMIT = 20;
 const OWNER_JOB = /^RQ-[A-Z0-9][A-Z0-9-]{0,79}$/;
 const OWNER_LANE = /^[a-z0-9][a-z0-9-]{0,31}$/;
 
-/** Owner = the most advanced job, emitted only when its id is a plain RQ id. */
+/** Owner row = { job, lane } for the public boundary, emitted only when the
+ * job id is a plain RQ id and the lane a lower-case lane id. */
 function ownerOf(job: { id: string; lane: string | null } | undefined): { job: string; lane: string | null } | null {
   if (job === undefined || !OWNER_JOB.test(job.id)) return null;
   return { job: job.id, lane: job.lane !== null && OWNER_LANE.test(job.lane) ? job.lane : null };
@@ -98,12 +100,20 @@ export function createFleetOrderStateApi(deps: FleetOrderStateApiDeps = {}): Api
       sources: trace.sources,
       live: liveState,
       orders: orders.slice(0, LIMIT).map((o) => {
-        const c = classifyOrder(o, trace.generatedAt, nowIso, live);
-        const best = mostAdvancedJob(o);
+        const evidence = orderEvidence(o, trace.generatedAt, live);
+        const c = classifyWorkItem(evidence, nowIso);
+        // Owner and pr name the same evidence that produced the state: the
+        // claimReceipt job (merged artifact, live running job or fallback
+        // claim) and its verified artifact — never a stopped sibling. Only a
+        // claim-less order (queued hint or no jobs) still names the most
+        // advanced job, and that stays a hint, never a claim.
+        const owner = evidence.claimReceipt !== undefined
+          ? ownerOf({ id: evidence.claimReceipt, lane: evidence.owner ?? null })
+          : ownerOf(mostAdvancedJob(o));
         return {
           at: o.at, source: o.source, key: o.key,
           state: c.state, asOf: c.asOf, evidenceSource: c.source,
-          missing: c.missing, pr: best?.url ?? null, owner: ownerOf(best),
+          missing: c.missing, pr: evidence.verified?.artifact ?? null, owner,
         };
       }),
     }));
