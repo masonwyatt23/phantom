@@ -2,6 +2,7 @@ import { open, readFile, readdir, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { readInboxEntries } from './mason-inbox.js';
+import { readQueuedLanes } from './order-queued-lanes.js';
 
 export interface OrderTraceJob {
   id: string;
@@ -12,7 +13,7 @@ export interface OrderTraceJob {
 export interface OrderTraceV1 {
   v: 1;
   generatedAt: string;
-  sources: Record<'inbox' | 'prompts' | 'publishes', 'healthy' | 'missing' | 'degraded'>;
+  sources: Record<'inbox' | 'prompts' | 'publishes' | 'queue', 'healthy' | 'missing' | 'degraded'>;
   orders: Array<{ at: string; source: string; alsoChannels?: string[]; requestId?: string; key: string; jobs: OrderTraceJob[] }>;
 }
 const months = 'Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec'.split(' ');
@@ -67,10 +68,13 @@ async function boundedText(path: string, bytes: number): Promise<string> {
 }
 export async function readOrderTrace(opts: { runsDir?: string; now?: () => number; maxBodies?: number } = {}): Promise<OrderTraceV1> {
   const root = opts.runsDir ?? join(homedir(), '.ashlr-runs');
-  const inbox = await readInboxEntries({ runsDir: root, limit: Number.MAX_SAFE_INTEGER });
+  const [inbox, queued] = await Promise.all([
+    readInboxEntries({ runsDir: root, limit: Number.MAX_SAFE_INTEGER }),
+    readQueuedLanes(root),
+  ]);
   const result: OrderTraceV1 = {
     v: 1, generatedAt: new Date((opts.now ?? Date.now)()).toISOString(),
-    sources: { inbox: inbox.sourceState, prompts: 'healthy', publishes: 'healthy' },
+    sources: { inbox: inbox.sourceState, prompts: 'healthy', publishes: 'healthy', queue: queued.state },
     orders: inbox.entries.flatMap(entry => {
       const key = orderKey(entry.at);
       return key ? [{ at: entry.at, source: entry.source, ...(entry.alsoChannels ? { alsoChannels: entry.alsoChannels } : {}), ...(entry.requestId !== undefined ? { requestId: entry.requestId } : {}), key, jobs: [] }] : [];
@@ -142,9 +146,14 @@ export async function readOrderTrace(opts: { runsDir?: string; now?: () => numbe
         lane = /^launched\s+RQ-[\w-]+\s+(\S+)/m.exec(marker)?.[1] ?? null;
       } catch (error) { if (sourceError(error) === 'degraded') result.sources.prompts = 'degraded'; }
       const publish = publishes.get(file.id);
+      const state: OrderTraceJob['state'] = merges.has(file.id) ? 'merged' : publish ? 'published' : launched ? 'launched' : 'queued';
+      // A still-queued job has no launch marker; queue/ready.tsv is the only
+      // artifact naming its routed lane. The marker stays authoritative for
+      // launched, published and merged jobs.
+      if (state === 'queued' && lane === null) lane = queued.lanes.get(file.id) ?? null;
       for (const order of result.orders) {
         if (!cached.keys.includes(order.key) || order.jobs.some(job => job.id === file.id)) continue;
-        order.jobs.push({ id: file.id, lane, state: merges.has(file.id) ? 'merged' : publish ? 'published' : launched ? 'launched' : 'queued', url: publish?.url ?? merges.get(file.id) ?? null });
+        order.jobs.push({ id: file.id, lane, state, url: publish?.url ?? merges.get(file.id) ?? null });
       }
     } catch { result.sources.prompts = 'degraded'; }
   }
