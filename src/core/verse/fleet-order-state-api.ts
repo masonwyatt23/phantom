@@ -12,6 +12,7 @@ import type { ApiModule } from './api-modules.js';
 import { sendJson } from '../web/api.js';
 import { parseOrderAt } from '../../cli/fleet-orders.js';
 import { classifyOrder, mostAdvancedJob, type LiveJobIds } from '../fleet/order-work-state.js';
+import { readRouteReplyFacts, threadReplyOf, type RouteReplyFacts } from '../fleet/order-thread-reply.js';
 import { readOrderTrace, type OrderTraceV1 } from '../fleet/order-trace.js';
 import { listLiveWorkers, type LiveWorkersSnapshot } from '../fleet/runs-live-workers.js';
 import { sanitizePublicJson } from '../util/public-json.js';
@@ -39,11 +40,15 @@ export interface FleetOrderStateApiDeps {
    * 'unavailable' sourceState leaves RUNNING unproven without failing the
    * request. */
   live?: () => Promise<LiveWorkersSnapshot>;
+  /** Leader route reply facts (requestId → delivered/attempted). Default:
+   * readRouteReplyFacts(). null or a throw makes every threadReply 'unknown'. */
+  replies?: () => ReadonlyMap<string, RouteReplyFacts> | null;
 }
 
 export function createFleetOrderStateApi(deps: FleetOrderStateApiDeps = {}): ApiModule {
   const read = deps.read ?? ((opts) => readOrderTrace(opts));
   const liveRead = deps.live ?? listLiveWorkers;
+  const repliesRead = deps.replies ?? (() => readRouteReplyFacts());
   const now = deps.now ?? (() => new Date());
   return async (_ctx, req, res, path, method) => {
     if (path !== VERSE_FLEET_ORDER_STATE_PATH) return false;
@@ -86,6 +91,8 @@ export function createFleetOrderStateApi(deps: FleetOrderStateApiDeps = {}): Api
     } catch {
       liveState = 'unavailable';
     }
+    let replies: ReadonlyMap<string, RouteReplyFacts> | null;
+    try { replies = repliesRead(); } catch { replies = null; }
     let orders = [...trace.orders].sort((a, b) => b.at.localeCompare(a.at));
     if (since !== undefined) {
       const cutoff = nowMs - since * 3600_000;
@@ -104,6 +111,7 @@ export function createFleetOrderStateApi(deps: FleetOrderStateApiDeps = {}): Api
           at: o.at, source: o.source, key: o.key,
           state: c.state, asOf: c.asOf, evidenceSource: c.source,
           missing: c.missing, pr: best?.url ?? null, owner: ownerOf(best),
+          threadReply: threadReplyOf(o.requestId, replies),
         };
       }),
     }));

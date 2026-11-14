@@ -37,6 +37,7 @@ export function OrderStateStrip({ visible = true }: { visible?: boolean }) {
               <span>owner: {v.ownerText}</span>
               {unchecked && v.state === 'ASSIGNED' ? <span className={styles.orderNote}> (unchecked)</span> : null}
               <span>{v.asOfText}</span>
+              {v.replyText !== '' ? <span>{v.replyText}</span> : null}
               <span>missing: {v.missingText}</span>
               {v.prUrl ? <a href={v.prUrl} target="_blank" rel="noreferrer noopener">{v.prLabel}</a> : null}
             </li>
