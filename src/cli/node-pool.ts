@@ -7,8 +7,21 @@ import { ashlrHome } from '../core/cloud/store.js';
 import { callPool, configurePool, readPoolConfig, serveNodeRpc, type NodeRpcRequest, type PoolConfig } from '../core/drive/nodes/pool-host.js';
 import { callNodeSsh, sshApprovalStep, validSshHost } from '../core/drive/nodes/ssh.js';
 import { probeNodeLanes, runNodeWorker } from '../core/drive/nodes/worker.js';
+import { safeReach } from '../core/drive/nodes/join-reach-hint.js';
+import { defaultPoolReachDeps, readPoolReach, type PoolReach } from '../core/fleet/pool-reach.js';
 
 export function hasNodePool(): boolean { return existsSync(join(ashlrHome(), 'node-pool', 'config.json')); }
+
+export interface NodePoolDeps {
+  /** Sanitized tailnet reach evidence; `config` overrides the saved-config read so a first join hints at the typed aliases. */
+  readReach?: (config?: PoolConfig | null) => PoolReach;
+}
+
+/** Live reach read: the saved pool config, or the caller-supplied in-memory config when given. */
+function liveReadReach(config?: PoolConfig | null): PoolReach {
+  const deps = defaultPoolReachDeps();
+  return readPoolReach(config === undefined ? deps : { ...deps, readConfig: () => config });
+}
 
 function flags(args: string[], values: string[], booleans: string[] = []): Map<string, string> {
   const out = new Map<string, string>();
@@ -35,15 +48,24 @@ async function readRequest(): Promise<NodeRpcRequest> {
   return JSON.parse(Buffer.concat(chunks).toString('utf8')) as NodeRpcRequest;
 }
 
-export async function cmdNodePool(verb: string, args: string[]): Promise<number> {
+export async function cmdNodePool(verb: string, args: string[], deps: NodePoolDeps = {}): Promise<number> {
+  const readReach = deps.readReach ?? liveReadReach;
   const json = args.includes('--json');
   const emit = (value: unknown) => console.log(json ? JSON.stringify(value) : JSON.stringify(value, null, 2));
+  // Reach evidence appears only once flag parsing produced a config or a saved
+  // config exists — never on flag-parse errors.
+  let flagError = false;
+  let parsedConfig: PoolConfig | undefined;
+  const parseFlags = (values: string[], booleans: string[] = []): Map<string, string> => {
+    try { return flags(args, values, booleans); } catch (error) { flagError = true; throw error; }
+  };
   try {
     if (verb === 'pool' || (verb === 'join' && !args.some(a => /^--(?:caps|slots)(?:=|$)/.test(a)))) {
-      const f = flags(args, [...(verb === 'pool' ? ['--role'] : []), '--node', '--owner', '--primary', '--backup']);
+      const f = parseFlags([...(verb === 'pool' ? ['--role'] : []), '--node', '--owner', '--primary', '--backup']);
       const role = verb === 'join' ? 'worker' : f.get('--role') as PoolConfig['role'];
       const existing = verb === 'join' ? readPoolConfig() : null;
       const config = existing ?? configFrom(f, role);
+      parsedConfig = config;
       if (!existing && verb === 'join' && !f.has('--node')) config.node = hostname().replace(/[^a-zA-Z0-9_.-]/g, '-').slice(0, 100);
       if (existing && ['--role', '--node', '--owner', '--primary', '--backup'].some(key => f.has(key) && f.get(key) !== existing[key.slice(2) as keyof PoolConfig])) throw new Error('Join cannot change pool identity');
       if (!validSshHost(config.primary) || !validSshHost(config.backup)) throw new Error('Use explicit team SSH config aliases for --primary and --backup');
@@ -61,7 +83,8 @@ export async function cmdNodePool(verb: string, args: string[]): Promise<number>
             next: 'phm node worker --runner /absolute/host-owned-runner --json', ...result.result });
           return 0;
         } catch {
-          emit({ schemaVersion: 1, registered: false, approvalSteps: [sshApprovalStep(config.primary), sshApprovalStep(config.backup)] });
+          emit({ schemaVersion: 1, registered: false, approvalSteps: [sshApprovalStep(config.primary), sshApprovalStep(config.backup)],
+            ...safeReach(() => readReach(config)) });
           return 1;
         }
       }
@@ -71,13 +94,14 @@ export async function cmdNodePool(verb: string, args: string[]): Promise<number>
     }
     const config = readPoolConfig();
     if (!config) throw new Error('Configure this Mac with phm node pool or phm node join --primary first');
+    parsedConfig = config;
     if (verb === 'rpc') {
-      flags(args, []);
+      parseFlags([]);
       emit(serveNodeRpc(config, await readRequest()));
       return 0;
     }
     if (verb === 'watch') {
-      const f = flags(args, [], ['--once']);
+      const f = parseFlags([], ['--once']);
       if (config.role === 'worker') throw new Error('Only primary and backup watch the runner heartbeat');
       do {
         const envelope: NodeRpcRequest = { kind: config.role === 'primary' ? 'witness' : 'client',
@@ -92,7 +116,7 @@ export async function cmdNodePool(verb: string, args: string[]): Promise<number>
       return 0;
     }
     if (verb === 'worker') {
-      const f = flags(args, ['--runner']);
+      const f = parseFlags(['--runner']);
       const runner = f.get('--runner');
       if (!runner) throw new Error('Worker requires --runner /absolute/host-owned-runner');
       emit({ schemaVersion: 1, ...await runNodeWorker(config, runner) });
@@ -102,7 +126,8 @@ export async function cmdNodePool(verb: string, args: string[]): Promise<number>
     emit({ schemaVersion: 1, command: verb, active: result.active, epoch: result.epoch, demoted: result.demoted, ...result.result });
     return result.demoted ? 1 : 0;
   } catch {
-    emit({ schemaVersion: 1, error: 'Node pool operation refused or unavailable. First join requires --owner <scope> --primary <alias> --backup <alias>. On configured Macs use phm node join --json. Check local sign-in and SSH approvals; primary admission requires the backup witness.' });
+    const evidence = !flagError && (parsedConfig !== undefined || hasNodePool()) ? safeReach(() => readReach(parsedConfig)) : {};
+    emit({ schemaVersion: 1, error: 'Node pool operation refused or unavailable. First join requires --owner <scope> --primary <alias> --backup <alias>. On configured Macs use phm node join --json. Check local sign-in and SSH approvals; primary admission requires the backup witness.', ...evidence });
     return 1;
   }
 }
