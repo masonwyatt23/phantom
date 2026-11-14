@@ -66,6 +66,14 @@ export function collectBusWorkItemEvidence(id: string, opts: { root: string; now
   const sources: BusWorkItemSources = { inbox: 'missing', claims: 'missing' };
   const now = Number.isSafeInteger(opts.now) && opts.now >= 0 ? opts.now : 0;
   let request: BusInboxReceipt | undefined;
+  // Verification replies seen during the scan, kept as candidates only. A
+  // candidate becomes evidence solely after the scan settles AND the request
+  // receipt is found, when the reply cursor follows the request cursor and the
+  // reply receipt is not timestamped before the request's. An orphan reply (no
+  // retained request), a reply that precedes its request, or a reply seen only
+  // by a partial scan has no settled request view to bind against and can
+  // never manufacture VERIFIED.
+  const replyCandidates: { cursor: number; receivedAt: number; verified: NonNullable<WorkItemEvidence['verified']> }[] = [];
   try {
     let after = 0, settled = false;
     // Same bounded scan as bus-work-claims.ts receipt(): a zero clock returns
@@ -76,13 +84,18 @@ export function collectBusWorkItemEvidence(id: string, opts: { root: string; now
       for (const row of result.messages) {
         if (row.envelope.id === id) request = row;
         const verified = replyVerifiedEvidence(row, id);
-        if (verified) evidence.verified = verified;
+        if (verified) replyCandidates.push({ cursor: row.cursor, receivedAt: row.receivedAt, verified });
       }
       if (result.nextCursor === after) { settled = true; break; }
       after = result.nextCursor;
     }
     sources.inbox = settled ? (request ? 'found' : 'missing') : 'unavailable';
     if (request) evidence.receivedAt = new Date(request.receivedAt).toISOString();
+    if (settled && request) {
+      for (const reply of replyCandidates) {
+        if (reply.cursor > request.cursor && reply.receivedAt >= request.receivedAt) evidence.verified = reply.verified;
+      }
+    }
   } catch { sources.inbox = 'unavailable'; }
   try {
     const inspection = inspectBusWorkClaims(opts.root);
