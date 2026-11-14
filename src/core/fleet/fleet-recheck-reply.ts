@@ -4,10 +4,12 @@
  * thread asks "can you reach live state". Backs `ashlr fleet recheck --reply`.
  *
  * The formatter is pure: no I/O, no clock reads, only the verdict's own asOf.
- * Output is one plain-text block capped at 900 characters, five evidence lines
- * plus a verdict line. A VERIFIED reply closes with "Evidence only; this reply
- * grants no dispatch."; anything else names what is missing. The words
- * 'routed' and 'dispatched' never appear — evidence is observed, not claimed.
+ * Output is one plain-text block capped at 900 characters: a verdict header,
+ * an optional Held line (how long the recorded log has held this verdict),
+ * five evidence lines and a closing verdict line. A VERIFIED reply closes
+ * with "Evidence only; this reply grants no dispatch."; anything else names
+ * what is missing. The words 'routed' and 'dispatched' never appear —
+ * evidence is observed, not claimed.
  *
  * Every interpolated value is sanitized again here, not trusted from upstream:
  * IPv4/IPv6 via sanitizeIdentityText and the /Users|/home/<name> path shape via
@@ -15,6 +17,7 @@
  * leak it into a thread reply.
  */
 import type { FleetRecheck } from './fleet-recheck.js';
+import type { RecheckHeld } from './recheck-held-since.js';
 import { sanitizeIdentityText } from './runtime-identity.js';
 
 /** Hard cap on the whole reply, including the trailing ellipsis when clipped. */
@@ -35,8 +38,19 @@ function scrub(value: string): string {
   return sanitizeIdentityText(value.replace(HOME_PATH, '~'), '').replace(FORBIDDEN_WORDS, '[verb]');
 }
 
-/** Format a fleet recheck verdict as one paste-ready thread reply. */
-export function formatRecheckReply(r: FleetRecheck): string {
+/** One Held evidence line inserted after the verdict header. `null` means the
+ * caller asked and no recorded run backs the live verdict; an absent argument
+ * leaves the reply exactly as before so existing callers stay byte-identical. */
+function heldLine(held: RecheckHeld | null): string {
+  if (held === null) return 'Held: unrecorded';
+  return `Held: ${scrub(held.state)} since ${scrub(held.since)}${held.truncated ? ' or earlier' : ''}`
+    + ` · ${held.consecutive} consecutive recorded check${held.consecutive === 1 ? '' : 's'}`;
+}
+
+/** Format a fleet recheck verdict as one paste-ready thread reply. When `held`
+ * is passed — a RecheckHeld or null — the Held line joins as the second line;
+ * the verdict line stays last. */
+export function formatRecheckReply(r: FleetRecheck, held?: RecheckHeld | null): string {
   const { runtime, claims, bridge, task } = r.sections;
   const channel = (name: 'slack' | 'imessage'): string =>
     bridge.channels.find(c => c.channel === name)?.state ?? 'absent';
@@ -62,6 +76,7 @@ export function formatRecheckReply(r: FleetRecheck): string {
         ? `BLOCKED on: ${missing}`
         : `UNKNOWN: ${missing}`,
   ];
+  if (held !== undefined) lines.splice(1, 0, heldLine(held));
   const text = lines.join('\n');
   return text.length <= REPLY_MAX ? text : `${text.slice(0, REPLY_MAX - 1)}…`;
 }

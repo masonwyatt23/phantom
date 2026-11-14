@@ -6,13 +6,27 @@
  * can never add a line, move the cursor or forge a verdict. Exit 0 only when
  * every section is VERIFIED, 1 otherwise. Read-only: nothing is written, sent
  * or dispatched, and the verdict grants no authority. */
+import { ashlrHome } from '../core/cloud/store.js';
 import { readFleetRecheck, type FleetRecheck, type FleetRecheckDeps } from '../core/fleet/fleet-recheck.js';
 import { formatRecheckReply } from '../core/fleet/fleet-recheck-reply.js';
+import { recheckHeldSince, type RecheckHeld } from '../core/fleet/recheck-held-since.js';
+import { readRecheckRecords } from '../core/fleet/recheck-record.js';
+
+/** CLI-local deps seam: the --reply Held line's record reader is injectable
+ * here without widening the core FleetRecheckDeps contract. */
+interface FleetRecheckCliDeps extends FleetRecheckDeps {
+  readRecords?: typeof readRecheckRecords;
+}
+
+/** How many retained log rows the --reply Held line may consult. */
+const REPLY_HELD_WINDOW = 50;
 
 const usage = 'Usage: ashlr fleet recheck [--json|--reply]\n'
   + 'Prints one read-only verdict: RUNTIME|CLAIMS|BRIDGE|TASK|OVERALL lines with\n'
   + 'as-of and source, the fleet.recheck.v1 object with --json, or a short\n'
   + 'paste-ready thread reply with --reply (--reply and --json cannot combine).\n'
+  + 'The reply gains a Held line naming how long the retained recheck log has\n'
+  + 'held the current verdict, or Held: unrecorded when no recorded run backs it.\n'
   + 'Exit 0 only when all four sections verify; 1 otherwise; 2 on bad arguments.\n'
   + '--reply always exits 0: the reply itself reports a BLOCKED or UNKNOWN verdict.';
 
@@ -69,7 +83,7 @@ function textLines(recheck: FleetRecheck): string[] {
   ];
 }
 
-export async function cmdFleetRecheck(args: string[], deps: FleetRecheckDeps = {}): Promise<number> {
+export async function cmdFleetRecheck(args: string[], deps: FleetRecheckCliDeps = {}): Promise<number> {
   let json = false;
   let reply = false;
   for (const arg of args) {
@@ -80,7 +94,19 @@ export async function cmdFleetRecheck(args: string[], deps: FleetRecheckDeps = {
     return 2;
   }
   const recheck = await readFleetRecheck(deps);
-  if (reply) { console.log(formatRecheckReply(recheck)); return 0; }
+  if (reply) {
+    // The log is read, never written, from this path: any failure or a verdict
+    // with no recorded run behind it leaves held null → "Held: unrecorded".
+    let held: RecheckHeld | null = null;
+    try {
+      const { rows } = (deps.readRecords ?? readRecheckRecords)(ashlrHome(), REPLY_HELD_WINDOW);
+      held = recheckHeldSince(rows, recheck.overall.state);
+    } catch {
+      held = null;
+    }
+    console.log(formatRecheckReply(recheck, held));
+    return 0;
+  }
   if (json) console.log(JSON.stringify(recheck, null, 2));
   else for (const l of textLines(recheck)) console.log(l);
   return recheck.overall.state === 'VERIFIED' ? 0 : 1;
