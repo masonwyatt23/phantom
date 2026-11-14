@@ -4,17 +4,23 @@
  * family (chained from fleet-work-board-api.ts) so no new route family is
  * registered. Reads local files and one fresh live-worker snapshot per
  * request (the same listLiveWorkers evidence the CLI uses, so RUNNING is
- * reachable here too), writes nothing, and never returns order text bodies,
- * file paths, worker command lines or a thrown message: an unreadable trace
- * answers 200 with sources 'unavailable' and no orders, and an unavailable
- * live read degrades to live 'unavailable' without failing the request. */
+ * reachable here too), plus one fresh lane-targets read per request (the
+ * same readLaneTargets/slots.json evidence the CLI uses, so an order whose
+ * every job is queued on a held lane reports BLOCKED with a sanitized lane
+ * dependency), writes nothing, and never returns order text bodies,
+ * file paths, worker command lines, hold reasons or a thrown message: an
+ * unreadable trace answers 200 with sources 'unavailable' and no orders,
+ * and an unavailable live or lanes read degrades to live/lanes
+ * 'unavailable' without failing the request or claiming BLOCKED. */
 import type { ApiModule } from './api-modules.js';
 import { sendJson } from '../web/api.js';
 import { parseOrderAt } from '../../cli/fleet-orders.js';
 import { classifyWorkItem } from '../comms/work-item-state.js';
 import { orderEvidence, mostAdvancedJob, type LiveJobIds } from '../fleet/order-work-state.js';
+import { heldLaneBlocker } from '../fleet/order-lane-blocker.js';
 import { readOrderTrace, type OrderTraceV1 } from '../fleet/order-trace.js';
 import { listLiveWorkers, type LiveWorkersSnapshot } from '../fleet/runs-live-workers.js';
+import { readLaneTargets, type LaneTargetsV1 } from '../fleet/runs-lane-targets.js';
 import { sanitizePublicJson } from '../util/public-json.js';
 
 export const VERSE_FLEET_ORDER_STATE_PATH = '/api/verse/fleet/work-board/orders';
@@ -41,11 +47,16 @@ export interface FleetOrderStateApiDeps {
    * 'unavailable' sourceState leaves RUNNING unproven without failing the
    * request. */
   live?: () => Promise<LiveWorkersSnapshot>;
+  /** Lane-targets reader seam for tests. Default: readLaneTargets(). Called
+   * once per valid GET, after all validation; a throw or a non-'healthy'
+   * sourceState leaves BLOCKED unproven without failing the request. */
+  lanes?: () => Promise<LaneTargetsV1>;
 }
 
 export function createFleetOrderStateApi(deps: FleetOrderStateApiDeps = {}): ApiModule {
   const read = deps.read ?? ((opts) => readOrderTrace(opts));
   const liveRead = deps.live ?? listLiveWorkers;
+  const lanesRead = deps.lanes ?? readLaneTargets;
   const now = deps.now ?? (() => new Date());
   return async (_ctx, req, res, path, method) => {
     if (path !== VERSE_FLEET_ORDER_STATE_PATH) return false;
@@ -88,6 +99,15 @@ export function createFleetOrderStateApi(deps: FleetOrderStateApiDeps = {}): Api
     } catch {
       liveState = 'unavailable';
     }
+    // Lane holds are read once per request, fresh every time — a held or
+    // failed snapshot is never cached. A throw or a non-'healthy'
+    // sourceState yields no blocker evidence, so BLOCKED is not claimed.
+    let lanes: LaneTargetsV1 | undefined;
+    try {
+      const targets = await lanesRead();
+      if (targets.sourceState === 'healthy') lanes = targets;
+    } catch { /* lanes stays undefined: no blocker evidence */ }
+    const lanesState: 'healthy' | 'unavailable' = lanes === undefined ? 'unavailable' : 'healthy';
     let orders = [...trace.orders].sort((a, b) => b.at.localeCompare(a.at));
     if (since !== undefined) {
       const cutoff = nowMs - since * 3600_000;
@@ -99,8 +119,9 @@ export function createFleetOrderStateApi(deps: FleetOrderStateApiDeps = {}): Api
       asOf: nowIso,
       sources: trace.sources,
       live: liveState,
+      lanes: lanesState,
       orders: orders.slice(0, LIMIT).map((o) => {
-        const evidence = orderEvidence(o, trace.generatedAt, live);
+        const evidence = orderEvidence(o, trace.generatedAt, live, lanes);
         const c = classifyWorkItem(evidence, nowIso);
         // Owner and pr name the same evidence that produced the state: the
         // claimReceipt job (merged artifact, live running job or fallback
@@ -110,10 +131,17 @@ export function createFleetOrderStateApi(deps: FleetOrderStateApiDeps = {}): Api
         const owner = evidence.claimReceipt !== undefined
           ? ownerOf({ id: evidence.claimReceipt, lane: evidence.owner ?? null })
           : ownerOf(mostAdvancedJob(o));
+        // `blocker` is the sanitized lane dependency (lanes + held-until
+        // timestamp only — never hold reasons or attribution), present on
+        // every row only when healthy lane evidence was read.
+        const blocker = lanes !== undefined
+          ? (c.state === 'BLOCKED' ? heldLaneBlocker(o, lanes)?.dependency ?? null : null)
+          : undefined;
         return {
           at: o.at, source: o.source, key: o.key,
           state: c.state, asOf: c.asOf, evidenceSource: c.source,
           missing: c.missing, pr: evidence.verified?.artifact ?? null, owner,
+          ...(blocker !== undefined ? { blocker } : {}),
         };
       }),
     }));
