@@ -3,7 +3,10 @@
  *
  * Bounded append-only JSONL under `<runs>/slack-bridge/journal.jsonl` (0600).
  * Every Socket Mode delivery the bridge sees lands here as ONE metadata record --
- * ids, timestamps, decision and reason code. Message text, display names, team
+ * ids, timestamps, thread coordinates, decision and reason code. `messageTs`
+ * and `threadTs` are Slack ts ids (`<seconds>.<microseconds>`) -- the event's
+ * own ts and its thread root -- stored only when they match the Slack ts
+ * grammar; they are Slack ids, never text. Message text, display names, team
  * names, tokens and socket URLs are never written; that is what makes the
  * "ignored and logged without content" rule auditable.
  *
@@ -13,6 +16,7 @@
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { ensurePrivateDirectory, readPrivateFileCapped, writePrivateFileAtomic } from '../verse/preferences.js';
+import { isSlackTs } from './slack-network.js';
 
 export const SLACK_JOURNAL_MAX_BYTES = 256 * 1024;
 const SLACK_JOURNAL_KEEP_BYTES = 192 * 1024;
@@ -29,6 +33,10 @@ export interface SlackObservation {
   channelId?: string;
   /** Author's Slack id (U…/W…/B…), never a display name. */
   authorId?: string;
+  /** Slack id of the event's own ts (`<seconds>.<microseconds>`) -- an id, never text. */
+  messageTs?: string;
+  /** Slack id of the thread root ts (thread_ts when present, else ts) -- an id, never text. */
+  threadTs?: string;
   decision: SlackDecision;
   /** Static reason code for ignored events; absent on ingest. */
   reason?: string;
@@ -66,6 +74,9 @@ function sanitize(obs: SlackObservation): Record<string, string> | null {
   if (boundedField(obs.eventId)) out['eventId'] = obs.eventId;
   if (boundedField(obs.channelId)) out['channelId'] = obs.channelId;
   if (boundedField(obs.authorId)) out['authorId'] = obs.authorId;
+  // Thread coordinates are Slack ts ids or nothing -- anything else drops.
+  if (isSlackTs(obs.messageTs)) out['messageTs'] = obs.messageTs;
+  if (isSlackTs(obs.threadTs)) out['threadTs'] = obs.threadTs;
   if (boundedField(obs.reason)) out['reason'] = obs.reason;
   if (obs.bus === 'posted' || obs.bus === 'duplicate' || obs.bus === 'failed') out['bus'] = obs.bus;
   return out;
@@ -129,6 +140,8 @@ export function readSlackJournal(
         ...(typeof row['eventId'] === 'string' ? { eventId: row['eventId'] } : {}),
         ...(typeof row['channelId'] === 'string' ? { channelId: row['channelId'] } : {}),
         ...(typeof row['authorId'] === 'string' ? { authorId: row['authorId'] } : {}),
+        ...(isSlackTs(row['messageTs']) ? { messageTs: row['messageTs'] } : {}),
+        ...(isSlackTs(row['threadTs']) ? { threadTs: row['threadTs'] } : {}),
         decision: row['decision'] === 'ingested' ? 'ingested' : 'ignored',
         ...(typeof row['reason'] === 'string' ? { reason: row['reason'] } : {}),
         ...(row['bus'] === 'posted' || row['bus'] === 'duplicate' || row['bus'] === 'failed' ? { bus: row['bus'] } : {}),

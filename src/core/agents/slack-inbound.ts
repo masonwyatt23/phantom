@@ -209,12 +209,21 @@ export function ingestSlackSocketMessage(raw: unknown, ctx: SlackIngestContext):
   const event = record(unwrapped.event) ? unwrapped.event : {};
   const channelId = isSlackChannelId(event['channel']) ? event['channel'] : undefined;
   const author = authorOf(event);
+  // Journal thread coordinates: Slack ts ids only, never text. The root follows
+  // slackEventToBus -- thread_ts when it is a valid ts, else the event's ts.
+  const messageTs = isSlackTs(event['ts']) ? event['ts'] : undefined;
+  const threadTs = isSlackTs(event['thread_ts']) ? event['thread_ts'] : messageTs;
+  const threadIds = {
+    ...(messageTs ? { messageTs } : {}),
+    ...(threadTs ? { threadTs } : {}),
+  };
   const decided = slackEventToBus(event, ctx);
   if (decided.status === 'ignore') {
     recordSlackObservation({
       at: now().toISOString(), ...base,
       ...(channelId ? { channelId } : {}),
       ...(author && isSlackAuthorId(author.id) ? { authorId: author.id } : {}),
+      ...threadIds,
       decision: 'ignored', reason: decided.reason,
     }, { runsDir: ctx.runsDir });
     return { decision: 'ignored', reason: decided.reason, ...base };
@@ -232,6 +241,7 @@ export function ingestSlackSocketMessage(raw: unknown, ctx: SlackIngestContext):
     at: now().toISOString(), ...base,
     ...(channelId ? { channelId } : {}),
     authorId: author!.id,
+    ...threadIds,
     decision: 'ingested',
     ...(bus ? { bus } : {}),
   }, { runsDir: ctx.runsDir });
