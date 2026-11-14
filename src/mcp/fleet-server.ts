@@ -1,4 +1,6 @@
 /** Isolated MCP adapter: no gateway discovery, forwarding, or mutation tools. */
+import { readFleetRecheck, type FleetRecheck } from '../core/fleet/fleet-recheck.js';
+import { formatRecheckReply } from '../core/fleet/fleet-recheck-reply.js';
 import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -176,6 +178,7 @@ export interface FleetReaders {
   workBoard?: (input: FleetWorkBoardArgs) => Promise<unknown>;
   runtimeIdentity?: () => Promise<unknown>;
   channelHealth?: () => Promise<unknown>;
+  recheck?: () => Promise<FleetRecheck>;
   lanes?: () => Promise<unknown>;
   selfTickLast?: () => Promise<unknown>;
   usageResets?: () => Promise<unknown>;
@@ -318,6 +321,12 @@ export function createFleetServer(readers: FleetReaders = { status: readFleetSta
       name: 'fleet_channel_health',
       description: 'Read Slack and iMessage bridge channel health (LIVE / DEGRADED / BLOCKED / UNKNOWN per channel with proof and asOf) — the same readChannelHealth report as `ashlr fleet channel-health`. Evidence only; it grants no send, dispatch or merge authority. The read is time-bounded: a throw or timeout returns { status: "unknown", reason } and never an invented healthy report. Takes no arguments: no caller root, path or cwd is accepted, and the tool never writes anything.',
       inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+      annotations,
+    },
+    {
+      name: 'fleet_recheck',
+      description: 'Read-only verdict joining runtime identity, claims ledger, channel health and work board into one fleet.recheck.v1 object (VERIFIED / UNKNOWN / BLOCKED with missing evidence) — the same readFleetRecheck verdict as `ashlr fleet recheck`. Evidence only; it grants no dispatch, claim or merge authority. Optional `reply: true` returns the paste-ready thread reply text instead of JSON. No caller root, path or cwd is accepted, and the tool never writes anything.',
+      inputSchema: { type: 'object', properties: { reply: { type: 'boolean', description: 'Return the paste-ready thread reply text instead of the JSON verdict.' } }, additionalProperties: false },
       annotations,
     },
     {
@@ -765,7 +774,7 @@ export function createFleetServer(readers: FleetReaders = { status: readFleetSta
   server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
     const { name, arguments: args = {} } = request.params;
     // Low-level SDK servers do not validate arguments against tools/list schemas.
-    if (name !== 'fleet_staging_inventory' && name !== 'fleet_staging_inventory_retry' && name !== 'fleet_staging_inventory_batch' && name !== 'fleet_status' && name !== 'fleet_loop' && name !== 'fleet_bus_hops' && name !== 'fleet_host_runs' && name !== 'fleet_bus_inbox' && name !== 'fleet_work_board' && name !== 'fleet_runtime_identity' && name !== 'fleet_channel_health' && name !== 'fleet_lanes' && name !== 'fleet_usage_resets' && name !== 'fleet_reset_history' && name !== 'fleet_reset_await' && name !== 'fleet_reset_group_await' && name !== 'fleet_reset_release_await' && name !== 'fleet_reset_follow' && name !== 'fleet_job_history' && name !== 'fleet_job_history_batch' && name !== 'fleet_job_current_batch' && name !== 'fleet_job_current' && name !== 'fleet_job_current_snapshot' && name !== 'fleet_job_patch' && name !== 'fleet_job_overlap' && name !== 'fleet_path_history' && name !== 'fleet_path_cochanges' && name !== 'fleet_job_precheck' && name !== 'fleet_job_precheck_batch' && name !== 'fleet_main_health' && name !== 'fleet_waste_risk' && name !== 'fleet_kept' && name !== 'fleet_trim' && name !== 'fleet_email_outbox' && name !== 'fleet_email_outbox_await' && name !== 'fleet_email_outbox_batch_await' && name !== 'fleet_email_diagnosis' && name !== 'fleet_gmail_triage_latest' && name !== 'fleet_disk_forecast' && name !== 'fleet_gmail_archive_plan_latest' && name !== 'fleet_comms_inbox' && name !== 'fleet_comms_readiness' && name !== 'fleet_imessage_path' && name !== 'fleet_imessage_acks' && name !== 'fleet_ci_resume_inputs' && name !== 'fleet_ci_receipt_await' && name !== 'fleet_ci_receipt_await_batch' && name !== 'fleet_release_candidate' && name !== 'fleet_intent_read' && name !== 'fleet_self_tick_last') {
+    if (name !== 'fleet_staging_inventory' && name !== 'fleet_staging_inventory_retry' && name !== 'fleet_staging_inventory_batch' && name !== 'fleet_status' && name !== 'fleet_loop' && name !== 'fleet_bus_hops' && name !== 'fleet_host_runs' && name !== 'fleet_bus_inbox' && name !== 'fleet_work_board' && name !== 'fleet_runtime_identity' && name !== 'fleet_channel_health' && name !== 'fleet_recheck' && name !== 'fleet_lanes' && name !== 'fleet_usage_resets' && name !== 'fleet_reset_history' && name !== 'fleet_reset_await' && name !== 'fleet_reset_group_await' && name !== 'fleet_reset_release_await' && name !== 'fleet_reset_follow' && name !== 'fleet_job_history' && name !== 'fleet_job_history_batch' && name !== 'fleet_job_current_batch' && name !== 'fleet_job_current' && name !== 'fleet_job_current_snapshot' && name !== 'fleet_job_patch' && name !== 'fleet_job_overlap' && name !== 'fleet_path_history' && name !== 'fleet_path_cochanges' && name !== 'fleet_job_precheck' && name !== 'fleet_job_precheck_batch' && name !== 'fleet_main_health' && name !== 'fleet_waste_risk' && name !== 'fleet_kept' && name !== 'fleet_trim' && name !== 'fleet_email_outbox' && name !== 'fleet_email_outbox_await' && name !== 'fleet_email_outbox_batch_await' && name !== 'fleet_email_diagnosis' && name !== 'fleet_gmail_triage_latest' && name !== 'fleet_disk_forecast' && name !== 'fleet_gmail_archive_plan_latest' && name !== 'fleet_comms_inbox' && name !== 'fleet_comms_readiness' && name !== 'fleet_imessage_path' && name !== 'fleet_imessage_acks' && name !== 'fleet_ci_resume_inputs' && name !== 'fleet_ci_receipt_await' && name !== 'fleet_ci_receipt_await_batch' && name !== 'fleet_release_candidate' && name !== 'fleet_intent_read' && name !== 'fleet_self_tick_last') {
       throw new McpError(ErrorCode.InvalidParams, 'Unknown fleet tool.');
     }
     if (args == null || typeof args !== 'object' || Array.isArray(args)) {
@@ -850,6 +859,7 @@ export function createFleetServer(readers: FleetReaders = { status: readFleetSta
         name === 'fleet_reset_follow' ? resetFollow === null :
         name === 'fleet_bus_inbox' ? inbox === null :
         name === 'fleet_reset_history' ? history === null :
+        name === 'fleet_recheck' ? Object.keys(args).some(key => key !== 'reply') || (args['reply'] !== undefined && typeof args['reply'] !== 'boolean') :
         Object.keys(args).some(key => !limited || key !== 'limit') ||
         (limited && (typeof limit !== 'number' || !Number.isInteger(limit) || limit < 1 || limit > maxLimit)) ||
         args['limit'] === null) {
@@ -865,6 +875,7 @@ export function createFleetServer(readers: FleetReaders = { status: readFleetSta
         : name === 'fleet_host_runs' ? await (readers.hostRuns ?? readFleetRunsDirState)()
         : name === 'fleet_runtime_identity' ? await (readers.runtimeIdentity ?? readFleetRuntimeIdentity)()
         : name === 'fleet_channel_health' ? await readFleetChannelHealth(readers.channelHealth)
+        : name === 'fleet_recheck' ? await (readers.recheck ?? (() => readFleetRecheck()))()
         : name === 'fleet_lanes' ? await (readers.lanes ?? readFleetLanes)()
         : name === 'fleet_self_tick_last' ? await (readers.selfTickLast ?? (() => readFleetSelfTickLast()))()
         : name === 'fleet_usage_resets' ? await (readers.usageResets ?? readFleetUsageResets)()
@@ -908,7 +919,9 @@ export function createFleetServer(readers: FleetReaders = { status: readFleetSta
         : await (readers.busInbox ?? readFleetBusInbox)(inbox as FleetBusInboxArgs);
       // Scrub values before serialization: redaction regexes operate on prose
       // and may consume JSON quotes if applied to already serialized bytes.
-      const text = JSON.stringify(value, (_key, item: unknown) =>
+      const text = name === 'fleet_recheck' && args['reply'] === true
+        ? scrubPrivateText(formatRecheckReply(value as FleetRecheck), { emails: true })
+        : JSON.stringify(value, (_key, item: unknown) =>
         typeof item === 'string' ? scrubPrivateText(item, { emails: true }) : item,
       );
       // Never slice JSON: oversized observations fail explicitly and remain valid MCP.
