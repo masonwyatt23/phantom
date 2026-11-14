@@ -204,6 +204,11 @@ stock `release-sign.sh` wrapper. CI does not codesign and does not notarize.
 The plan reason `mac-release-autorun` means signed assets are still pending
 from this wrapper; it blocks desktop completion, but not npm dispatch once
 build, attestation and audit evidence are available. It is not a new hold.
+When the tagged commit has no successful Dependency Audit, which happens when
+a newer master push cancels its pending run, the train dispatches the audit on
+the release tag ref. It retries a red audit at most three times, then reports
+`audit-failed`. The train does not re-dispatch npm publish while a publish run
+for that version is active. See [release autonomy gaps](release/AUTONOMY-GAPS.md).
 The wrapper picks up a successful attestation of a `v*` tag on its existing
 10 minute poll. The attestor may be current master, or the release tag commit
 when that tag's peeled sha is the candidate, the commit is an ancestor of

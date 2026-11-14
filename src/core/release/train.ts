@@ -136,6 +136,12 @@ export interface TrainObservation {
   attest: { runId: number; attempt: number; artifactId: number; completedAt: string | null } | null;
   attestPending: boolean;
   audit: { runId: number; attempt: number } | null;
+  /** An admitted Dependency Audit run on `head.sha` is queued or running. */
+  auditPending: boolean;
+  /** Completed admitted Dependency Audit runs on `head.sha` that did not succeed. */
+  auditFailures: number;
+  /** A publish run for this version is queued, running, or waiting on its environment. */
+  publishPending: boolean;
   npmPublished: boolean | null;
   npmAt: string | null;
   docsSynced: boolean;
@@ -159,6 +165,16 @@ export interface TrainState {
   steps: Record<string, { status: StepStatus; reason?: string }>;
   stages: Record<string, StageTiming>;
 }
+
+/**
+ * Dispatched audits per candidate before the train stops retrying. A transient
+ * OSV or registry outage clears on retry; a real advisory stays red and needs a
+ * dependency fix, which arrives as a new release, so the cap ends a retry storm
+ * without weakening the gate.
+ */
+export const MAX_AUDIT_ATTEMPTS = 3;
+const STEP_ORDER = ['build', 'attest', 'audit', 'sign', 'notarize', 'npm', 'feed', 'docs', 'finalize'] as const;
+export const WORKFLOW_DISPATCH = /^repos\/ashlrai\/phantom\/actions\/workflows\/(attest-ci-build|publish-canonical-npm|ci|release-please|dependency-audit)\.yml\/dispatches$/;
 
 export const ENQUEUE_PULL_REQUEST = 'mutation($id:ID!){enqueuePullRequest(input:{pullRequestId:$id}){mergeQueueEntry{position state}}}';
 const PULL_NODE = /^PR_[A-Za-z0-9_-]+$/;
@@ -350,7 +366,6 @@ function emptyStages(mergeAt: string | null): Record<string, StageTiming> {
 export function assertReleaseWrite(write: ReleaseWrite): void {
   if (write.method !== 'PATCH' && write.method !== 'POST') throw new Error('refusing release write');
   const release = /^repos\/ashlrai\/phantom\/releases\/([1-9]\d*)$/;
-  const dispatch = /^repos\/ashlrai\/phantom\/actions\/workflows\/(attest-ci-build|publish-canonical-npm|ci|release-please)\.yml\/dispatches$/;
   if (write.path.includes('/merge') || JSON.stringify(write.body).includes('admin') || JSON.stringify(write.body).includes('bypass')) {
     throw new Error('refusing release write');
   }
@@ -364,10 +379,12 @@ export function assertReleaseWrite(write: ReleaseWrite): void {
     if (body.query !== ENQUEUE_PULL_REQUEST || !PULL_NODE.test(body.variables?.pullRequestId ?? '')) throw new Error('refusing release enqueue');
     return;
   }
-  if (dispatch.test(write.path)) {
+  if (WORKFLOW_DISPATCH.test(write.path)) {
     const body = write.body as { ref?: string; inputs?: Record<string, string | boolean> };
     if ((body.ref !== 'master' && !/^v\d+\.\d+\.\d+$/.test(body.ref ?? '')) || !body.inputs) throw new Error('refusing workflow dispatch');
     if (write.path.endsWith('/release-please.yml/dispatches') && (body.ref !== 'master' || Object.keys(body.inputs).length !== 0)) throw new Error('refusing release PR dispatch');
+    // The audit must run on the exact tagged commit, so only a release tag ref is allowed.
+    if (write.path.endsWith('/dependency-audit.yml/dispatches') && (!RELEASE_TAG.test(body.ref ?? '') || Object.keys(body.inputs).length !== 0)) throw new Error('refusing audit dispatch');
     return;
   }
   throw new Error('refusing release write');
@@ -470,7 +487,18 @@ export function buildTrain(input: TrainObservation): TrainPlan {
       } },
     });
   }
-  if (input.build && input.attest && input.audit && input.npmPublished === false && publishable) {
+  // A master push audit for the tagged commit is routinely replaced by a newer
+  // push in the same concurrency group, which leaves the tag with no successful
+  // audit. Without that run, npm publish never dispatches. Run the audit again on
+  // the tag ref; the publisher accepts a workflow_dispatch run whose head_sha is the candidate.
+  const auditExhausted = !input.audit && input.auditFailures >= MAX_AUDIT_ATTEMPTS;
+  if (!input.audit && !input.auditPending && !auditExhausted && input.npmPublished === false && publishable) {
+    writes.push({ method: 'POST', path: `repos/${REPOSITORY}/actions/workflows/dependency-audit.yml/dispatches`, body: { ref, inputs: {} } });
+  }
+  // publish-canonical-npm keeps one pending run per version group, and a newer
+  // dispatch cancels it. Re-dispatching while a run is active, for example one
+  // waiting on phantom-npm approval, would cancel the run that is waiting.
+  if (input.build && input.attest && input.audit && input.npmPublished === false && publishable && !input.publishPending) {
     // Re-run the strictly-greater tag check immediately before publish dispatch.
     if (successorTagConflict(input.masterVersion, input.tags)) return stopped('duplicate_tag');
     writes.push({
@@ -512,15 +540,22 @@ export function buildTrain(input: TrainObservation): TrainPlan {
       ...(!input.build && !publishable ? { reason: input.candidateCi === 'pending' ? 'candidate-ci-pending' : 'candidate-ci-unknown' } : {}),
     },
     attest: { status: input.attest ? 'complete' : 'pending' },
+    audit: {
+      status: input.audit ? 'complete' : 'pending',
+      ...(input.audit ? {} : { reason: auditExhausted ? 'audit-failed' : input.auditPending ? 'audit-running' : input.npmPublished === true ? 'npm-already-published' : 'audit-missing' }),
+    },
     sign: { status: signed ? 'complete' : 'pending', reason: signed ? 'signed-release-assets' : 'mac-release-autorun' },
     notarize: { status: signed ? 'complete' : 'pending', reason: signed ? 'signed-release-assets' : 'mac-release-autorun' },
-    npm: { status: input.npmPublished === true ? 'complete' : 'pending', ...(input.npmPublished === null ? { reason: 'registry-unknown' } : {}) },
+    npm: {
+      status: input.npmPublished === true ? 'complete' : 'pending',
+      ...(input.npmPublished === null ? { reason: 'registry-unknown' } : input.npmPublished === false && input.publishPending ? { reason: 'publish-running' } : {}),
+    },
     feed: { status: publishedFeed || (feed && !published && feedMatches) ? 'complete' : 'pending', ...(published && !feedMatches ? { reason: 'feed-version-mismatch' } : {}) },
     docs: { status: docs ? 'complete' : 'pending' },
     website: { status: docs ? 'hooked' : 'pending', reason: 'phantom-secrets' },
     finalize: { status: publishedFeed && input.npmPublished === true ? 'complete' : 'pending' },
   };
-  const order = ['build', 'attest', 'sign', 'notarize', 'npm', 'feed', 'docs', 'finalize'];
+  const order: string[] = [...STEP_ORDER];
   if (steps.supersede?.status === 'pending') order.unshift('supersede');
   const next = order.find((name) => steps[name]?.status === 'pending') ?? null;
   const stages = emptyStages(mergeAt);
@@ -546,8 +581,7 @@ export function buildTrain(input: TrainObservation): TrainPlan {
 
 export function markWritesApplied(state: TrainState): TrainState {
   const steps: TrainState['steps'] = { ...state.steps, supersede: { status: 'complete' } };
-  const order = ['build', 'attest', 'sign', 'notarize', 'npm', 'feed', 'docs', 'finalize'];
-  const next = order.find((name) => steps[name]?.status === 'pending') ?? null;
+  const next = STEP_ORDER.find((name) => steps[name]?.status === 'pending') ?? null;
   return { ...state, steps, next: state.advance ? 'release-pr' : next };
 }
 
@@ -711,7 +745,7 @@ export async function observeTrain(
   }
   const version = head ? head.tag.slice(1) : masterVersion;
   const found = head ? await successfulRun(read, 'ci.yml', head.sha, head.tag) : { build: null, pending: false };
-  const audit = head ? await auditRun(read, head.sha) : null;
+  const audited = head ? await auditRun(read, head.sha, head.tag) : { audit: null, pending: false, failures: 0 };
   const attested = found.build ? await attestRun(read, found.build.runId, found.build.attempt) : { attest: null, pending: false };
   const npm = await read(`registry/npm/@ashlr/phantom/${version}`);
   const npmRecord = record(npm);
@@ -721,7 +755,9 @@ export async function observeTrain(
     now, fleetKill: kill.fleet, autorunOff: kill.autorun,
     masterSha, masterVersion, cadenceMinutes, lastTaggedAt, aheadBy, tags, head, skippedTags, releases,
     openReleasePr, pullChecks, candidateCi, build: found.build, buildPending: found.pending,
-    attest: attested.attest, attestPending: attested.pending, audit,
+    attest: attested.attest, attestPending: attested.pending,
+    audit: audited.audit, auditPending: audited.pending, auditFailures: audited.failures,
+    publishPending: head ? await publishRunPending(read, version) : false,
     npmPublished: npm === null ? false : npmRecord?.version === version ? true : null,
     npmAt: text(npmRecord?.time) ?? (npmRecord && record(npmRecord.time)?.[version] ? String(record(npmRecord.time)?.[version]) : null),
     docsSynced,
@@ -840,16 +876,57 @@ async function successfulRun(read: (path: string) => Promise<unknown>, workflow:
   return { build: null, pending };
 }
 
-async function auditRun(read: (path: string) => Promise<unknown>, sha: string): Promise<TrainObservation['audit']> {
-  const listed = record(await read(`repos/${REPOSITORY}/actions/workflows/dependency-audit.yml/runs?head_sha=${sha}&status=success&per_page=5`));
+/**
+ * Audit runs the publisher's verifyUpdateAudit accepts, narrowed to this
+ * repository and to master or the exact release tag. A pull_request run from
+ * another branch can share the head SHA, so it does not count.
+ */
+export function admitAuditRun(run: Record<string, unknown>, sha: string, tag: string): boolean {
+  if (run.head_sha !== sha || run.path !== '.github/workflows/dependency-audit.yml') return false;
+  if (run.event !== 'push' && run.event !== 'workflow_dispatch') return false;
+  if (text(record(run.repository)?.full_name) !== REPOSITORY) return false;
+  if (text(record(run.head_repository)?.full_name) !== REPOSITORY) return false;
+  return run.head_branch === 'master' || run.head_branch === tag;
+}
+
+const RUN_ACTIVE = new Set(['queued', 'in_progress', 'waiting', 'pending', 'requested']);
+
+async function auditRun(read: (path: string) => Promise<unknown>, sha: string, tag: string): Promise<{ audit: TrainObservation['audit']; pending: boolean; failures: number }> {
+  const listed = record(await read(`repos/${REPOSITORY}/actions/workflows/dependency-audit.yml/runs?head_sha=${sha}&per_page=20`));
   const runs = Array.isArray(listed?.workflow_runs) ? listed.workflow_runs : [];
+  // With an incomplete page, report pending so the train neither duplicates an
+  // audit nor gives up on one. This page normally holds one or two runs.
+  const truncated = !Number.isInteger(listed?.total_count) || Number(listed?.total_count) > runs.length;
+  let pending = truncated;
+  let failures = 0;
   for (const row of runs) {
     const run = record(row);
-    if (run?.head_sha !== sha || run.conclusion !== 'success' || run.head_branch !== 'master') continue;
-    if (!Number.isSafeInteger(run.id) || !Number.isSafeInteger(run.run_attempt)) continue;
-    return { runId: Number(run.id), attempt: Number(run.run_attempt) };
+    if (!run || !admitAuditRun(run, sha, tag)) continue;
+    if (RUN_ACTIVE.has(String(run.status))) { pending = true; continue; }
+    if (run.status !== 'completed') continue;
+    // A cancelled run was superseded in the concurrency group; it is not a red audit.
+    if (run.conclusion === 'cancelled' || run.conclusion === 'skipped') continue;
+    if (run.conclusion !== 'success') { failures += 1; continue; }
+    if (!Number.isSafeInteger(run.id) || !Number.isSafeInteger(run.run_attempt) || Number(run.id) <= 0 || Number(run.run_attempt) <= 0) continue;
+    return { audit: { runId: Number(run.id), attempt: Number(run.run_attempt) }, pending: false, failures };
   }
-  return null;
+  return { audit: null, pending, failures };
+}
+
+/** Must match `run-name` in .github/workflows/publish-canonical-npm.yml. */
+export function publishRunTitle(version: string): string {
+  return `Publish @ashlr/phantom ${version}`;
+}
+
+async function publishRunPending(read: (path: string) => Promise<unknown>, version: string): Promise<boolean> {
+  const listed = record(await read(`repos/${REPOSITORY}/actions/workflows/publish-canonical-npm.yml/runs?branch=master&event=workflow_dispatch&per_page=20`));
+  // An unreadable inventory reports pending: a duplicate dispatch can cancel a run that is waiting for approval.
+  if (!listed || !Array.isArray(listed.workflow_runs)) return true;
+  const title = publishRunTitle(version);
+  return listed.workflow_runs.some((row) => {
+    const run = record(row);
+    return run?.display_title === title && text(record(run.repository)?.full_name) === REPOSITORY && RUN_ACTIVE.has(String(run.status));
+  });
 }
 
 async function attestRun(read: (path: string) => Promise<unknown>, ciRun: number, ciAttempt: number): Promise<{ attest: TrainObservation['attest']; pending: boolean }> {
@@ -893,8 +970,6 @@ export function releaseGithubCall(method: string, path: string, body?: unknown):
   if (body === undefined) return { args: [...args, path] };
   return { args: [...args, '--input', '-', path], input: JSON.stringify(body) };
 }
-
-export const WORKFLOW_DISPATCH = /^repos\/ashlrai\/phantom\/actions\/workflows\/(attest-ci-build|publish-canonical-npm|ci|release-please)\.yml\/dispatches$/;
 
 /** Draft PATCH and enqueue use the App token. Workflow dispatches stay on
  *  GITHUB_TOKEN: the ashlr-release App has no actions permission, so a mint

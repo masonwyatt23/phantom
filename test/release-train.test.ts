@@ -1,11 +1,11 @@
-import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { afterEach, describe, expect, it } from 'vitest';
 import { cmdRelease } from '../src/cli/release.js';
 import {
-  admitCiRun, allowReleasePrDispatch, assertReleaseWrite, buildTrain, cadenceMinutesFromEnv, cappedCadenceMinutes, DEFAULT_CADENCE_MINUTES, docsCarriersSynced, ENQUEUE_PULL_REQUEST,
+  admitAuditRun, admitCiRun, allowReleasePrDispatch, MAX_AUDIT_ATTEMPTS, publishRunTitle, assertReleaseWrite, buildTrain, cadenceMinutesFromEnv, cappedCadenceMinutes, DEFAULT_CADENCE_MINUTES, docsCarriersSynced, ENQUEUE_PULL_REQUEST,
   judgeRequiredChecks, releaseHeadBranch, releaseWriteUsesAppToken, TRAIN_JOB_CHECK_NAME,
   enqueueReleasePullRequest, hostedTrainGate, isReleasePleaseCommit,
   successorTagConflict, refusePublishIfSuccessorConflict,
@@ -54,6 +54,9 @@ function observation(overrides: Partial<TrainObservation> = {}): TrainObservatio
     attest: null,
     attestPending: false,
     audit: null,
+    auditPending: false,
+    auditFailures: 0,
+    publishPending: false,
     feedVersion: null,
     npmPublished: false,
     npmAt: null,
@@ -510,7 +513,8 @@ describe('release train', () => {
       'repos/ashlrai/phantom/releases?per_page=100&page=1': [{ id: 3, tag_name: 'v3.30.27', draft: true, name: 'Phantom 3.30.27', body: '', created_at: '2026-11-09T02:36:49Z', assets: [] }],
       'repos/ashlrai/phantom/pulls?state=open&per_page=100&page=1': [],
       [`repos/ashlrai/phantom/actions/workflows/ci.yml/runs?head_sha=${head}&per_page=20`]: { total_count: 0, workflow_runs: [] },
-      [`repos/ashlrai/phantom/actions/workflows/dependency-audit.yml/runs?head_sha=${head}&status=success&per_page=5`]: { total_count: 0, workflow_runs: [] },
+      [`repos/ashlrai/phantom/actions/workflows/dependency-audit.yml/runs?head_sha=${head}&per_page=20`]: { total_count: 0, workflow_runs: [] },
+      'repos/ashlrai/phantom/actions/workflows/publish-canonical-npm.yml/runs?branch=master&event=workflow_dispatch&per_page=20': { total_count: 0, workflow_runs: [] },
       'registry/npm/@ashlr/phantom/3.30.27': null,
       ...greenCi(head),
     };
@@ -533,5 +537,145 @@ describe('release train', () => {
     }, '2026-11-09T06:00:00.000Z', 30, { fleet: 'inactive', autorun: 'inactive' });
     expect(unpaged.candidateCi).toBe('unknown');
     expect(buildTrain(unpaged).writes.some((write) => write.path.endsWith('/ci.yml/dispatches'))).toBe(false);
+  });
+});
+
+describe('release train self-healing audit and publish dispatch', () => {
+  const build = { runId: 11, attempt: 2, artifactId: 101, completedAt: '2026-11-09T03:00:00.000Z' };
+  const attest = { runId: 22, attempt: 1, artifactId: 202, completedAt: '2026-11-09T03:10:00.000Z' };
+  const auditPath = 'repos/ashlrai/phantom/actions/workflows/dependency-audit.yml/dispatches';
+  const publishPath = 'repos/ashlrai/phantom/actions/workflows/publish-canonical-npm.yml/dispatches';
+  const auditWrites = (plan: ReturnType<typeof buildTrain>) => plan.writes.filter((write) => write.path === auditPath);
+
+  it('re-runs a missing audit on the exact tag ref and reports why npm waits', () => {
+    const plan = buildTrain(observation({ build, attest, releases: [] }));
+    expect(auditWrites(plan)).toEqual([{ method: 'POST', path: auditPath, body: { ref: 'v3.30.27', inputs: {} } }]);
+    expect(plan.writes.some((write) => write.path === publishPath)).toBe(false);
+    expect(plan.state.steps.audit).toEqual({ status: 'pending', reason: 'audit-missing' });
+    expect(plan.state.next).toBe('audit');
+    for (const write of plan.writes) expect(() => assertReleaseWrite(write)).not.toThrow();
+    expect(releaseWriteUsesAppToken('POST', auditPath)).toBe(false);
+  });
+
+  it('dispatches the audit in parallel with the build rather than after it', () => {
+    expect(auditWrites(buildTrain(observation()))).toHaveLength(1);
+  });
+
+  it('does not duplicate a running audit, re-run a passed one, or audit an unqualified candidate', () => {
+    const running = buildTrain(observation({ build, attest, auditPending: true }));
+    expect(auditWrites(running)).toEqual([]);
+    expect(running.state.steps.audit).toEqual({ status: 'pending', reason: 'audit-running' });
+    const passed = buildTrain(observation({ build, attest, audit: { runId: 33, attempt: 1 } }));
+    expect(auditWrites(passed)).toEqual([]);
+    expect(passed.state.steps.audit).toEqual({ status: 'complete' });
+    expect(auditWrites(buildTrain(observation({ candidateCi: 'pending' })))).toEqual([]);
+    expect(auditWrites(buildTrain(observation({ candidateCi: 'unknown' })))).toEqual([]);
+    expect(auditWrites(buildTrain(observation({ npmPublished: true })))).toEqual([]);
+    expect(auditWrites(buildTrain(observation({ npmPublished: null })))).toEqual([]);
+  });
+
+  it('stops retrying a red audit after the attempt cap and keeps the publish gate closed', () => {
+    expect(auditWrites(buildTrain(observation({ build, attest, auditFailures: MAX_AUDIT_ATTEMPTS - 1 })))).toHaveLength(1);
+    const exhausted = buildTrain(observation({ build, attest, auditFailures: MAX_AUDIT_ATTEMPTS }));
+    expect(auditWrites(exhausted)).toEqual([]);
+    expect(exhausted.writes.some((write) => write.path === publishPath)).toBe(false);
+    expect(exhausted.state.steps.audit).toEqual({ status: 'pending', reason: 'audit-failed' });
+  });
+
+  it('refuses audit dispatches on master, branch refs, or with inputs', () => {
+    expect(() => assertReleaseWrite({ method: 'POST', path: auditPath, body: { ref: 'master', inputs: {} } })).toThrow(/refusing audit dispatch/);
+    expect(() => assertReleaseWrite({ method: 'POST', path: auditPath, body: { ref: 'v3.30.27-rc.1', inputs: {} } })).toThrow(/refusing/);
+    expect(() => assertReleaseWrite({ method: 'POST', path: auditPath, body: { ref: 'v3.30.27', inputs: { x: 'y' } } })).toThrow(/refusing audit dispatch/);
+    expect(() => assertReleaseWrite({ method: 'POST', path: auditPath, body: { ref: 'v3.30.27', inputs: {} } })).not.toThrow();
+  });
+
+  it('admits only same-repo push or dispatch audit runs on master or the exact tag', () => {
+    const run = {
+      head_sha: head, path: '.github/workflows/dependency-audit.yml', event: 'workflow_dispatch', head_branch: 'v3.30.27',
+      repository: { full_name: 'ashlrai/phantom' }, head_repository: { full_name: 'ashlrai/phantom' },
+    };
+    expect(admitAuditRun(run, head, 'v3.30.27')).toBe(true);
+    expect(admitAuditRun({ ...run, event: 'push', head_branch: 'master' }, head, 'v3.30.27')).toBe(true);
+    expect(admitAuditRun({ ...run, head_branch: 'v3.30.26' }, head, 'v3.30.27')).toBe(false);
+    expect(admitAuditRun({ ...run, event: 'pull_request', head_branch: 'feature' }, head, 'v3.30.27')).toBe(false);
+    expect(admitAuditRun({ ...run, event: 'schedule' }, head, 'v3.30.27')).toBe(false);
+    expect(admitAuditRun({ ...run, head_repository: { full_name: 'fork/phantom' } }, head, 'v3.30.27')).toBe(false);
+    expect(admitAuditRun({ ...run, head_sha: sha }, head, 'v3.30.27')).toBe(false);
+    expect(admitAuditRun({ ...run, path: '.github/workflows/ci.yml' }, head, 'v3.30.27')).toBe(false);
+  });
+
+  it('holds the npm dispatch while a publish run for this version is active', () => {
+    const ready = observation({ build, attest, audit: { runId: 33, attempt: 1 } });
+    expect(buildTrain(ready).writes.filter((write) => write.path === publishPath)).toHaveLength(1);
+    const held = buildTrain({ ...ready, publishPending: true });
+    expect(held.writes.filter((write) => write.path === publishPath)).toEqual([]);
+    expect(held.state.steps.npm).toEqual({ status: 'pending', reason: 'publish-running' });
+  });
+
+  it('keeps run-name in the publish workflow aligned with the train title', () => {
+    const workflow = readFileSync(join(process.cwd(), '.github/workflows/publish-canonical-npm.yml'), 'utf8');
+    expect(workflow).toMatch(/^run-name: Publish @ashlr\/phantom \$\{\{ inputs\.version \}\}$/m);
+    expect(publishRunTitle('3.30.27')).toBe('Publish @ashlr/phantom 3.30.27');
+  });
+
+  function observedWith(extra: Record<string, unknown>): (path: string) => Promise<unknown> {
+    const data: Record<string, unknown> = {
+      'repos/ashlrai/phantom': { id: 1263526319, full_name: 'ashlrai/phantom' },
+      'repos/ashlrai/phantom/commits/master': { sha },
+      [`repos/ashlrai/phantom/contents/package.json?ref=${sha}`]: { encoding: 'base64', content: Buffer.from(JSON.stringify({ name: '@ashlr/phantom', version: '3.30.27' })).toString('base64') },
+      'repos/ashlrai/phantom/git/ref/tags/v3.30.27': { ref: 'refs/tags/v3.30.27', object: { type: 'commit', sha: head } },
+      [`repos/ashlrai/phantom/commits/${head}`]: { sha: head, commit: { message, committer: { date: '2026-11-09T02:30:00.000Z' } } },
+      [`repos/ashlrai/phantom/compare/${head}...${sha}`]: { status: 'ahead', ahead_by: 2 },
+      'repos/ashlrai/phantom/tags?per_page=100&page=1': [{ name: 'v3.30.27', commit: { sha: head } }],
+      'repos/ashlrai/phantom/releases?per_page=100&page=1': [],
+      'repos/ashlrai/phantom/pulls?state=open&per_page=100&page=1': [],
+      [`repos/ashlrai/phantom/actions/workflows/ci.yml/runs?head_sha=${head}&per_page=20`]: { total_count: 0, workflow_runs: [] },
+      [`repos/ashlrai/phantom/actions/workflows/dependency-audit.yml/runs?head_sha=${head}&per_page=20`]: { total_count: 0, workflow_runs: [] },
+      'repos/ashlrai/phantom/actions/workflows/publish-canonical-npm.yml/runs?branch=master&event=workflow_dispatch&per_page=20': { total_count: 0, workflow_runs: [] },
+      'registry/npm/@ashlr/phantom/3.30.27': null,
+      ...greenCi(head),
+      ...extra,
+    };
+    return async (path) => {
+      if (!Object.hasOwn(data, path)) throw new Error(`unexpected ${path}`);
+      return data[path];
+    };
+  }
+  const observe = (extra: Record<string, unknown>) => observeTrain(observedWith(extra), '2026-11-09T06:00:00.000Z', 30, { fleet: 'inactive', autorun: 'inactive' });
+  const auditList = `repos/ashlrai/phantom/actions/workflows/dependency-audit.yml/runs?head_sha=${head}&per_page=20`;
+  const publishList = 'repos/ashlrai/phantom/actions/workflows/publish-canonical-npm.yml/runs?branch=master&event=workflow_dispatch&per_page=20';
+  const repoRefs = { repository: { full_name: 'ashlrai/phantom' }, head_repository: { full_name: 'ashlrai/phantom' } };
+  const auditRunRow = (over: Record<string, unknown>) => ({ id: 40, run_attempt: 1, head_sha: head, path: '.github/workflows/dependency-audit.yml', event: 'push', head_branch: 'master', status: 'completed', conclusion: 'success', ...repoRefs, ...over });
+
+  it('observes a cancelled master audit as missing so the train re-runs it', async () => {
+    const observed = await observe({ [auditList]: { total_count: 1, workflow_runs: [auditRunRow({ conclusion: 'cancelled' })] } });
+    expect(observed).toMatchObject({ audit: null, auditPending: false, auditFailures: 0 });
+    expect(auditWrites(buildTrain(observed))).toHaveLength(1);
+  });
+
+  it('observes a tag-dispatched audit success, a running audit, and counted failures', async () => {
+    const tagged = await observe({ [auditList]: { total_count: 2, workflow_runs: [auditRunRow({ id: 41, event: 'workflow_dispatch', head_branch: 'v3.30.27' }), auditRunRow({ conclusion: 'cancelled' })] } });
+    expect(tagged.audit).toEqual({ runId: 41, attempt: 1 });
+    const running = await observe({ [auditList]: { total_count: 1, workflow_runs: [auditRunRow({ status: 'in_progress', conclusion: null })] } });
+    expect(running).toMatchObject({ audit: null, auditPending: true });
+    const failed = await observe({ [auditList]: { total_count: 3, workflow_runs: [1, 2, 3].map((id) => auditRunRow({ id, conclusion: 'failure', event: 'workflow_dispatch', head_branch: 'v3.30.27' })) } });
+    expect(failed).toMatchObject({ audit: null, auditPending: false, auditFailures: 3 });
+    expect(auditWrites(buildTrain(failed))).toEqual([]);
+    const foreign = await observe({ [auditList]: { total_count: 1, workflow_runs: [auditRunRow({ event: 'pull_request', head_branch: 'feature' })] } });
+    expect(foreign.audit).toBeNull();
+  });
+
+  it('treats a truncated audit inventory as pending instead of re-dispatching', async () => {
+    const observed = await observe({ [auditList]: { total_count: 25, workflow_runs: [auditRunRow({ conclusion: 'cancelled' })] } });
+    expect(observed.auditPending).toBe(true);
+    expect(auditWrites(buildTrain(observed))).toEqual([]);
+  });
+
+  it('observes an active publish run for this version only', async () => {
+    const active = (title: string, status: string) => ({ total_count: 1, workflow_runs: [{ display_title: title, status, ...repoRefs }] });
+    expect((await observe({ [publishList]: active('Publish @ashlr/phantom 3.30.27', 'waiting') })).publishPending).toBe(true);
+    expect((await observe({ [publishList]: active('Publish @ashlr/phantom 3.30.26', 'in_progress') })).publishPending).toBe(false);
+    expect((await observe({ [publishList]: active('Publish @ashlr/phantom 3.30.27', 'completed') })).publishPending).toBe(false);
+    expect((await observe({ [publishList]: { message: 'unavailable' } })).publishPending).toBe(true);
   });
 });
