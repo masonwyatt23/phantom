@@ -4,14 +4,15 @@
 import { homedir } from 'node:os';
 import { ashlrHome } from '../core/cloud/store.js';
 import { readFleetRecheck, type FleetRecheck, type FleetRecheckDeps } from '../core/fleet/fleet-recheck.js';
-import { appendRecheckRecord, readRecheckRecords, type RecheckRecord } from '../core/fleet/recheck-record.js';
+import { appendRecheckRecord, RECHECK_REASON_MAX, readRecheckRecords, type RecheckRecord } from '../core/fleet/recheck-record.js';
 
 const usage = 'Usage: ashlr fleet recheck-record [--last N [--json [--envelope]]]\n'
   + 'Without flags: runs the read-only recheck and appends one sanitized row to the\n'
   + 'local recheck log (newest 500 kept); prints "recorded <overall> as-of=<asOf>".\n'
   + '--last N (1..50, default 5): prints the newest N rows, newest first; --json prints them as an array.\n'
   + '--envelope requires --last N --json and includes history read evidence.\n'
-  + 'Nonverified rows print the first missing reason not already named by missingBridge\n'
+  + 'Nonverified rows print the first missing reason not already named by missingBridge,\n'
+  + 'falling back to the retained missingBridge itself when it is the only gap\n'
   + '("unrecorded" when the row predates retained reasons).\n'
   + 'Exit 0 when the write succeeded, 1 when it failed or --last history is\n'
   + 'unreadable, 2 on bad arguments.';
@@ -24,16 +25,27 @@ export interface FleetRecheckRecordDeps {
   recheckDeps?: FleetRecheckDeps;
 }
 
+const CONTROL_CHARS = /\p{Cc}+/gu;
+
+/** One terminal line, bounded like a recorded reason: retained values come
+ * from the log file, so a hand-edited row could carry control characters. */
+function oneLine(value: string): string {
+  return value.replace(CONTROL_CHARS, ' ').slice(0, RECHECK_REASON_MAX);
+}
+
 function row(r: RecheckRecord): string {
   const s = r.sections;
   const base = `${r.asOf} ${r.overall} runtime=${s.runtime.state} claims=${s.claims.state} bridge=${s.bridge.state} task=${s.task.state}`;
   if (r.overall === 'VERIFIED') return base;
   if (s.missing === null) return `${base} missing=unrecorded`;
   // The v1 row already names the bridge gap in missingBridge; show the first
-  // recorded reason that field does not cover.
+  // recorded reason that field does not cover, or the dependency itself when
+  // it is the only gap — a sole bridge gap must stay visible in text output.
   const shown = s.missing.overall.filter(reason => reason !== s.bridge.missingBridge);
-  if (shown.length === 0) return base;
-  return `${base} missing=${shown[0]}${shown.length > 1 ? ` (+${shown.length - 1} more)` : ''}`;
+  const first = shown[0] ?? s.bridge.missingBridge;
+  if (first === null || first === undefined || first === '') return base;
+  const extra = shown.length > 0 ? shown.length - 1 : 0;
+  return `${base} missing=${oneLine(first)}${extra > 0 ? ` (+${extra} more)` : ''}`;
 }
 
 export async function cmdFleetRecheckRecord(args: string[], deps: FleetRecheckRecordDeps = {}): Promise<number> {
