@@ -11,13 +11,15 @@ export interface RecheckResp {
     asOf?: string;
     overall?: { state?: string; missing?: string[] };
   };
+  /** Exact formatRecheckReply() text (requested via `?reply=1`). */
+  reply?: string;
 }
 
 /** `null` = the route is absent (404) on this build. */
 export const recheckVerdictQuery: QueryDef<RecheckResp | null> = {
   key: 'verse-fleet-recheck',
   async fetch(signal) {
-    try { return await apiGet<RecheckResp>('/api/verse/fleet/recheck', signal); }
+    try { return await apiGet<RecheckResp>('/api/verse/fleet/recheck?reply=1', signal); }
     catch (error) {
       if (error instanceof ApiError && error.status === 404) return null;
       throw error;

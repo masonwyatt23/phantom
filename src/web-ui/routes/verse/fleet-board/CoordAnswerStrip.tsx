@@ -6,6 +6,7 @@
  * (runtime-identity, comms-status channel health, work board) plus the advisory claims ledger so the shared
  * cache still serves one request each; polls at 15 s while visible. Read-only.
  */
+import { useEffect, useRef, useState } from 'react';
 import { useQuery, useRefetch } from '../../../data/hooks.js';
 import { usePollWhileVisible } from '../shell/section-visibility.js';
 import { channelHealthQuery } from '../fleet-channels/channel-health-query.js';
@@ -52,6 +53,20 @@ export function CoordAnswerStrip({ visible }: { visible: boolean }) {
   const recheckLine = deriveRecheckLine(
     recheck.data === undefined && recheck.status === 'error' ? 'error' : recheck.data, Date.now());
 
+  const reply = recheck.data !== null && typeof recheck.data?.reply === 'string' && recheck.data.reply !== ''
+    ? recheck.data.reply : null;
+  const [copy, setCopy] = useState<'idle' | 'copied' | 'failed'>('idle');
+  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  useEffect(() => () => clearTimeout(timer.current), []);
+  const copyReply = async () => {
+    if (reply === null) return;
+    let next: 'copied' | 'failed' = 'copied';
+    try { await navigator.clipboard.writeText(reply); } catch { next = 'failed'; }
+    setCopy(next);
+    clearTimeout(timer.current);
+    timer.current = setTimeout(() => setCopy('idle'), 2000);
+  };
+
   return (
     <section className={styles.coordAnswer} aria-labelledby="fb-coord-answer" data-verdict={answer.verdict}>
       <div className={styles.coordHead}>
@@ -67,7 +82,18 @@ export function CoordAnswerStrip({ visible }: { visible: boolean }) {
         ))}
         <div>
           <dt>Server</dt>
-          <dd data-ok={String(recheckLine.ok)}>{recheckLine.text}</dd>
+          <dd data-ok={String(recheckLine.ok)}>
+            {recheckLine.text}
+            {reply !== null ? (
+              <>
+                {' '}
+                <button type="button" className={styles.coordCopy} onClick={() => { void copyReply(); }}
+                  aria-label="Copy Phantom recheck reply to clipboard">
+                  {copy === 'copied' ? 'Copied' : copy === 'failed' ? 'Copy failed' : 'Copy reply'}
+                </button>
+              </>
+            ) : null}
+          </dd>
         </div>
       </dl>
       {answer.missing.length > 0 ? (

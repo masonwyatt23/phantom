@@ -2,11 +2,14 @@
  * readFleetRecheck() result `ashlr fleet recheck` and the Slack reply use, so
  * the desktop strip need not re-derive REACHABLE/BLOCKED client-side.
  * Read-only: never appends to the recheck log, never sends, grants nothing.
- * `?history=N` (1..50) adds the retained rows via readRecheckRecords. */
+ * `?history=N` (1..50) adds the retained rows via readRecheckRecords.
+ * `?reply=1` adds `reply`: the exact formatRecheckReply() text the Slack path
+ * posts, so the desktop "Copy reply" action cannot drift from it. */
 import type { ApiModule } from './api-modules.js';
 import { sendJson } from '../web/api.js';
 import { ashlrHome } from '../cloud/store.js';
 import { readFleetRecheck, type FleetRecheck } from '../fleet/fleet-recheck.js';
+import { formatRecheckReply } from '../fleet/fleet-recheck-reply.js';
 import { readRecheckRecords } from '../fleet/recheck-record.js';
 
 export const VERSE_FLEET_RECHECK_PATH = '/api/verse/fleet/recheck';
@@ -28,7 +31,14 @@ export function createFleetRecheckApi(deps: FleetRecheckApiDeps = {}): ApiModule
       sendJson(res, 405, { error: 'method not allowed' });
       return true;
     }
-    const raw = new URL(req.url ?? path, 'http://localhost').searchParams.get('history');
+    const params = new URL(req.url ?? path, 'http://localhost').searchParams;
+    const raw = params.get('history');
+    const replyRaw = params.get('reply');
+    if (replyRaw !== null && replyRaw !== '1') {
+      sendJson(res, 400, { error: 'reply must be 1' });
+      return true;
+    }
+    const withReply = replyRaw === '1';
     let last: number | null = null;
     if (raw !== null) {
       last = /^\d+$/.test(raw) ? Number(raw) : NaN;
@@ -44,12 +54,13 @@ export function createFleetRecheckApi(deps: FleetRecheckApiDeps = {}): ApiModule
       sendJson(res, 503, { error: 'recheck unavailable' });
       return true;
     }
+    const extra = withReply ? { reply: formatRecheckReply(recheck) } : {};
     if (last === null) {
-      sendJson(res, 200, { recheck });
+      sendJson(res, 200, { recheck, ...extra });
       return true;
     }
     const { rows, skipped, missing } = readRecheckRecords(home(), last);
-    sendJson(res, 200, { recheck, history: { rows, skipped, missing } });
+    sendJson(res, 200, { recheck, history: { rows, skipped, missing }, ...extra });
     return true;
   };
 }
