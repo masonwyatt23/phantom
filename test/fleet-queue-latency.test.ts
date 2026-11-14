@@ -51,6 +51,39 @@ it('ignores future steps and handles an empty or fully future snapshot', () => {
   expect(() => queueLatency({ prs: [] }, NaN)).toThrow();
 });
 
+it('keeps repeated stage visits separate and excludes ongoing and future visits from statistics', () => {
+  const report = queueLatency({ prs: [{ repo: 'a/b', number: 1, stages: [
+    { stage: 'queued', at: at(11) },
+    { stage: 'opened', at: at(8) },
+    { stage: 'queued', at: at(9) },
+    { stage: 'checks_started', at: at(10) },
+    { stage: 'checks_started', at: at(13) },
+  ] }] }, now);
+  expect(report.stages.map(s => [s.stage, s.count, s.median_s, s.max_s])).toEqual([
+    ['opened', 1, 3600, 3600], ['approved', 0, null, null],
+    ['queued', 1, 3600, 3600], ['checks_started', 1, 3600, 3600],
+  ]);
+  expect(report.prs[0]).toMatchObject({ stage: 'queued', waiting_s: 3600, slowest_stage: 'opened' });
+  expect(report.slowest_stage).toBe('opened');
+});
+
+it('preserves input order for simultaneous steps and rounds each duration to seconds', () => {
+  const report = queueLatency({ prs: [{ repo: 'a/b', number: 1, stages: [
+    { stage: 'opened', at: new Date(now - 1499).toISOString() },
+    { stage: 'approved', at: new Date(now - 1499).toISOString() },
+    { stage: 'queued', at: new Date(now - 500).toISOString() },
+  ] }] }, now);
+  expect(report.stages.slice(0, 3).map(s => [s.count, s.median_s])).toEqual([[1, 0], [1, 1], [0, null]]);
+  expect(report.prs[0]).toMatchObject({ stage: 'queued', waiting_s: 1, slowest_stage: 'approved' });
+});
+
+it('prioritizes missing heads over recut limits and limits over duplicate requests', () => {
+  const pr = { ...snapshot.prs[1]!, recutRequests: 3, lastRecutHead: 'AAAAAAA' };
+  expect(queueLatency({ prs: [pr] }, now).advice[0]).toMatchObject({ reason: 'too-many-recuts' });
+  expect(queueLatency({ prs: [{ ...pr, headSha: undefined }] }, now).advice[0]).toMatchObject({ reason: 'no-head' });
+  expect(queueLatency({ prs: [{ ...pr, recutRequests: 2 }] }, now).advice[0]).toMatchObject({ reason: 'already-requested' });
+});
+
 it('validates snapshots strictly', () => {
   expect(validQueueLatencyInput(snapshot)).toBe(true);
   const bad = [null, {}, { prs: [null] }, { prs: [{ repo: 'nope', number: 1, stages: [{ stage: 'opened', at: at(1) }] }] },

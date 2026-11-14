@@ -71,6 +71,31 @@ export function validQueueLatencyInput(value: unknown): value is QueueLatencyInp
 /** Nearest-rank median of an ascending list. */
 const median = (sorted: number[]) => sorted[Math.max(0, Math.ceil(sorted.length / 2) - 1)]!;
 
+interface StageDuration { stage: QueueStage; seconds: number }
+
+/** Keep repeated stages as separate visits; equal timestamps retain input order. */
+function stageDurations(pr: QueueLatencyPr, now: number): StageDuration[] {
+  const steps = pr.stages.map(s => ({ stage: s.stage, at: Date.parse(s.at) }))
+    .filter(s => s.at <= now).sort((a, b) => a.at - b.at);
+  return steps.map((s, i) => ({
+    stage: s.stage,
+    seconds: Math.round(((steps[i + 1]?.at ?? now) - s.at) / 1000),
+  }));
+}
+
+/** Advice is descriptive only; preserve the precedence of recut refusal reasons. */
+function conflictAdvice(pr: QueueLatencyPr, waiting_s: number): QueueLatencyAdvice | null {
+  if (pr.mergeable !== 'CONFLICTING') return null;
+  const base = { repo: pr.repo, number: pr.number, waiting_s };
+  const request = recutRequest(pr.repo, pr.number, pr.headSha ?? null);
+  if (!request) return { ...base, action: 'needs_person', reason: 'no-head', say: `#${pr.number} conflicts but its head commit is unknown; a person should look.` };
+  if ((pr.recutRequests ?? 0) >= MAX_QUEUE_RECUTS) return { ...base, action: 'needs_person', reason: 'too-many-recuts', say: `#${pr.number} still conflicts after ${pr.recutRequests} recuts; a person should look.` };
+  if (pr.lastRecutHead && pr.lastRecutHead.length >= 7 && request.headSha.startsWith(pr.lastRecutHead.toLowerCase().slice(0, 40))) {
+    return { ...base, action: 'needs_person', reason: 'already-requested', say: `#${pr.number} already has a recut for this commit; wait for it.` };
+  }
+  return { ...base, action: 'recut', recut: request, say: `Recut #${pr.number} automatically (${request.key}); required checks run again on the new head.` };
+}
+
 /**
  * Read-only: where queued PRs spend their time, and which conflicts the recut
  * loop can retry. Nothing here merges, requeues or skips a required check.
@@ -81,12 +106,13 @@ export function queueLatency(input: QueueLatencyInput, now = Date.now()): QueueL
   const prs: QueueLatencyRow[] = [];
   const advice: QueueLatencyAdvice[] = [];
   for (const pr of input.prs) {
-    // Steps that start after the observation time have not happened yet.
-    const steps = pr.stages.map(s => ({ stage: s.stage, at: Date.parse(s.at) }))
-      .filter(s => s.at <= now).sort((a, b) => a.at - b.at);
-    if (!steps.length) continue;
-    const durations = steps.map((s, i) => ({ stage: s.stage, seconds: Math.round(((steps[i + 1]?.at ?? now) - s.at) / 1000) }));
-    for (const d of durations.slice(0, -1)) spent.get(d.stage)!.push(d.seconds);
+    // The final visit is ongoing, so only earlier visits enter finished-stage statistics.
+    const durations = stageDurations(pr, now);
+    if (!durations.length) continue;
+    for (let i = 0; i < durations.length - 1; i++) {
+      const d = durations[i]!;
+      spent.get(d.stage)!.push(d.seconds);
+    }
     const current = durations[durations.length - 1]!;
     const conflicting = pr.mergeable === 'CONFLICTING';
     const slowest = durations.reduce((a, b) => b.seconds > a.seconds ? b : a);
@@ -94,14 +120,8 @@ export function queueLatency(input: QueueLatencyInput, now = Date.now()): QueueL
       wait_cause: current.stage === 'opened' || current.stage === 'approved' ? (conflicting ? 'conflict' : null)
         : attributeMergeWait(conflicting, pr.queuePosition ?? null),
       slowest_stage: slowest.stage });
-    if (!conflicting) continue;
-    const base = { repo: pr.repo, number: pr.number, waiting_s: current.seconds };
-    const request = recutRequest(pr.repo, pr.number, pr.headSha ?? null);
-    if (!request) advice.push({ ...base, action: 'needs_person', reason: 'no-head', say: `#${pr.number} conflicts but its head commit is unknown; a person should look.` });
-    else if ((pr.recutRequests ?? 0) >= MAX_QUEUE_RECUTS) advice.push({ ...base, action: 'needs_person', reason: 'too-many-recuts', say: `#${pr.number} still conflicts after ${pr.recutRequests} recuts; a person should look.` });
-    else if (pr.lastRecutHead && pr.lastRecutHead.length >= 7 && request.headSha.startsWith(pr.lastRecutHead.toLowerCase().slice(0, 40))) {
-      advice.push({ ...base, action: 'needs_person', reason: 'already-requested', say: `#${pr.number} already has a recut for this commit; wait for it.` });
-    } else advice.push({ ...base, action: 'recut', recut: request, say: `Recut #${pr.number} automatically (${request.key}); required checks run again on the new head.` });
+    const recommendation = conflictAdvice(pr, current.seconds);
+    if (recommendation) advice.push(recommendation);
   }
   const stages = QUEUE_STAGES.map<StageDelay>(stage => {
     const values = spent.get(stage)!.sort((a, b) => a - b);
