@@ -50,7 +50,7 @@ import { COMMS_CONFIRM_PATH, handleCommsConfirmRoute } from './comms-confirm-rou
 import { watchLeaderThread } from './leader-thread-watch.js';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { timingSafeEqual, randomBytes } from 'node:crypto';
-import { basename, resolve as resolvePath, sep as pathSep } from 'node:path';
+import { basename, join, resolve as resolvePath, sep as pathSep } from 'node:path';
 import { realpathSync } from 'node:fs';
 
 /**
@@ -2012,6 +2012,51 @@ export async function handleApi(
       const read = await readFleetBoard({ runsDir: defaultFleetBoardRunsDir() })
         .catch((): { status: 'unavailable'; board: null } => ({ status: 'unavailable', board: null }));
       sendJson(res, 200, fleetBoardResponse(read, Date.now()));
+      return true;
+    }
+
+    // ── GET /api/fleet/work-board ────────────────────────────────────────
+    // RQ-PHX-WORKBOARDROUTE323: the shared coordination work board — the same
+    // listWorkBoard listing `ashlr fleet work-board --json` and the
+    // fleet_work_board MCP tool serve, so the desktop Fleet Board pane shows
+    // the identical board (requests classified RECEIVED / ASSIGNED / RUNNING /
+    // BLOCKED / VERIFIED, newest first). READ-ONLY bounded fs read of the
+    // server-owned default fleet root (<ashlr home>/fleet) only — no query
+    // parameter may choose a root, path or cwd. `limit` is an integer
+    // 1..100 (default 20); `thread` is an optional exact channel_ref filter.
+    // An unreadable inbox reports inbox 'unavailable', never an invented
+    // board; no message body ever leaves the listing. Same no-auth read
+    // class as /api/fleet/board.
+    if (path === '/api/fleet/work-board' && method === 'GET') {
+      const { listWorkBoard, WORK_BOARD_DEFAULT_LIMIT, WORK_BOARD_MAX_LIMIT } = await import('../comms/work-board.js');
+      const { ashlrHome } = await import('../cloud/store.js');
+      const rawLimit = getQueryParam(req.url ?? '', 'limit');
+      let limit = WORK_BOARD_DEFAULT_LIMIT;
+      if (rawLimit !== undefined) {
+        if (!/^\d+$/.test(rawLimit)) {
+          sendJson(res, 400, { error: 'invalid-limit' });
+          return true;
+        }
+        limit = Number(rawLimit);
+        if (limit < 1 || limit > WORK_BOARD_MAX_LIMIT) {
+          sendJson(res, 400, { error: 'invalid-limit' });
+          return true;
+        }
+      }
+      const thread = getQueryParam(req.url ?? '', 'thread');
+      if (thread !== undefined && (thread.length < 1 || thread.length > 512 || /\p{Cc}/u.test(thread))) {
+        sendJson(res, 400, { error: 'invalid-thread' });
+        return true;
+      }
+      const now = Date.now();
+      const asOf = new Date(now).toISOString();
+      let board;
+      try {
+        board = listWorkBoard({ root: join(ashlrHome(), 'fleet'), now, limit, channelRef: thread });
+      } catch {
+        board = { items: [], inbox: 'unavailable', truncated: false };
+      }
+      sendJson(res, 200, { ...board, asOf });
       return true;
     }
 
