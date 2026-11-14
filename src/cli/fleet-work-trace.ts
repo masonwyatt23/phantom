@@ -9,7 +9,10 @@ import { classifyWorkItem } from '../core/comms/work-item-state.js';
 
 const usage = 'Usage: ashlr fleet work-trace --id <bus-message-id> [--root <absolute>] [--json]\n'
   + 'Prints one line: ID STATE as-of=... source=... missing=... inbox=<found|missing|unavailable> claims=<available|missing|unavailable>.\n'
-  + 'State comes only from the durable stores; an unknown id is RECEIVED with as-of=unknown. Read-only.';
+  + 'State comes only from the durable stores; an unknown id is RECEIVED with as-of=unknown. Read-only.\n'
+  + 'Exit 0 when a trace printed (absent stores are a valid read); exit 1 when a durable source\n'
+  + 'is unavailable (inbox=unavailable or claims=unavailable) so callers can probe readability;\n'
+  + 'exit 2 on usage errors.';
 
 export async function cmdFleetWorkTrace(args: string[]): Promise<number> {
   if (args.length === 1 && ['--help', '-h'].includes(args[0]!)) { console.log(usage); return 0; }
@@ -31,5 +34,7 @@ export async function cmdFleetWorkTrace(args: string[]): Promise<number> {
   if (json) console.log(JSON.stringify(result));
   else console.log(`${result.id} ${result.state} as-of=${result.asOf} source=${result.source} `
     + `missing=${result.missing.length ? result.missing.join(',') : 'none'} inbox=${result.inbox} claims=${result.claims}`);
-  return 0;
+  // A disconnected reply worker uses the exit code as a read-only connection
+  // test: any unavailable durable source is a failed read, never a trace.
+  return result.inbox === 'unavailable' || result.claims === 'unavailable' ? 1 : 0;
 }
