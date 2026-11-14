@@ -9,6 +9,9 @@ export interface WorkItemEvidence {
   receivedAt?: string;
   owner?: string;
   claimReceipt?: string;
+  /** ISO time from a settled `complete` claim; a completion marker only —
+   * never verification and grants nothing. */
+  completedAt?: string;
   runningEvidence?: { source: string; at: string };
   blocker?: { dependency: string; source: string; at: string };
   verified?: { pr?: number; head?: string; tests?: string; artifact?: string; source: string; at: string };
@@ -46,6 +49,11 @@ export function classifyWorkItem(e: WorkItemEvidence, nowIso: string): WorkItemC
   if (!text(e.claimReceipt)) missing.push('durable claim receipt');
   const stale = hasRunning ? ['fresh running evidence'] : [];
   const asOf = stamped(e.receivedAt) ? e.receivedAt : 'unknown';
-  if (missing.length === 0) return { state: 'ASSIGNED', asOf, source: `claim:${e.claimReceipt}`, missing: stale };
+  if (missing.length === 0) {
+    // A settled complete claim without a verified reply is done, not verified:
+    // the board reports exactly what is still absent.
+    if (stamped(e.completedAt)) stale.push(`verification artifact (claim completed ${e.completedAt})`);
+    return { state: 'ASSIGNED', asOf, source: `claim:${e.claimReceipt}`, missing: stale };
+  }
   return { state: 'RECEIVED', asOf, source: asOf === 'unknown' ? 'unknown' : 'receivedAt', missing: [...missing, ...stale] };
 }

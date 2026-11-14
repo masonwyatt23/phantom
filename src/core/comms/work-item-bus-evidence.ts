@@ -71,7 +71,12 @@ function claimEvidence(evidence: WorkItemEvidence, claims: BusWorkClaimView[], r
   if (!claim) return;
   evidence.owner = claim.owner;
   evidence.claimReceipt = `bus-claim:${claim.id}:${claim.cursor}:${claim.receivedAt}`;
-  if (claim.completedAt !== null) return;
+  if (claim.completedAt !== null) {
+    // A settled claim is a completion marker, not running evidence and not
+    // verification: stamp it so the classifier can say what is still absent.
+    if (Number.isFinite(claim.completedAt)) evidence.completedAt = new Date(claim.completedAt).toISOString();
+    return;
+  }
   const until = new Date(claim.leaseUntil).toISOString();
   if (claim.leaseUntil > now) {
     evidence.runningEvidence = { source: `bus-work-claims lease-until ${until}`, at: new Date(now).toISOString() };
