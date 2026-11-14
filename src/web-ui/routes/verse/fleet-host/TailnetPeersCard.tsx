@@ -1,7 +1,7 @@
 import { useQuery, useRefetch } from '../../../data/hooks.js';
 import { useDocumentVisible, usePollWhileVisible, useSectionVisible } from '../shell/section-visibility.js';
 import { formatAge } from './runtime-identity-model.js';
-import { snapshotAge, summarizePeers, type TailnetPeerRow, type TailnetPeersView } from './tailnet-peers-model.js';
+import { isSelfPeer, snapshotAge, summarizePeers, type TailnetPeerRow, type TailnetPeersView } from './tailnet-peers-model.js';
 import { tailnetPeersQuery } from './tailnet-peers-query.js';
 import styles from './fleet-host.module.css';
 
@@ -12,6 +12,7 @@ export function TailnetPeersBody({ view, now = Date.now() }: { view: TailnetPeer
   const sum = summarizePeers(view);
   return <>
     <h3 className={styles.title}>Fleet computers</h3>
+    <p className={view.self === '' || view.self === 'unknown' ? styles.muted : styles.line}>{`This computer: ${view.self === '' ? 'unknown' : view.self}`}</p>
     <p className={styles.line}>
       {sum.online} online · {sum.offline} offline{sum.unknown ? ` · ${sum.unknown} unknown` : ''}
       {' '}<span className={styles.muted}>as of {formatAge(snapshotAge(view.asOf, now))}</span>
@@ -21,12 +22,14 @@ export function TailnetPeersBody({ view, now = Date.now() }: { view: TailnetPeer
       {view.reasons[0] ? <p className={styles.muted}>{view.reasons[0]}</p> : null}
     </> : <ul className={styles.peerList}>{view.peers.map((p, i) => {
       const state = stateOf(p.online);
-      return <li className={styles.peerRow} key={`${i}:${p.name}`}>
+      const self = isSelfPeer(view.self, p.name);
+      return <li className={styles.peerRow} data-self={self ? 'true' : undefined} key={`${i}:${p.name}`}>
         <span className={styles.peerDot} data-state={state} aria-hidden="true" />
         <span className={styles.peerState}>{state}</span>
         <span className={styles.peerName}>{p.name}</span>
         <span className={styles.muted}>{p.os}</span>
         <span className={styles.muted}>last seen {p.ageSeconds === 'unknown' ? 'unknown' : formatAge(p.ageSeconds)}</span>
+        {self ? <span className={styles.muted}>this computer</span> : null}
       </li>;
     })}</ul>}
   </>;

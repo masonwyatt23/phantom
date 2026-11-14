@@ -64,3 +64,13 @@ export function snapshotAge(asOf: string, nowMs: number): number | Unknown {
   const t = Date.parse(asOf);
   return Number.isFinite(t) ? Math.max(0, Math.floor((nowMs - t) / 1000)) : 'unknown';
 }
+
+const firstLabel = (n: string) => n.split('.')[0] ?? n;
+
+/** True when `name` is this computer: case-insensitive full match or equal first DNS label. 'unknown'/empty never match. */
+export function isSelfPeer(self: string, name: string): boolean {
+  const s = self.trim().toLowerCase();
+  const n = name.trim().toLowerCase();
+  if (s === '' || s === 'unknown' || n === '') return false;
+  return s === n || firstLabel(s) === firstLabel(n);
+}
