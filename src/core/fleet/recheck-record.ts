@@ -148,9 +148,19 @@ function isRecord(v: unknown): v is RecheckRecord {
   if (typeof v !== 'object' || v === null) return false;
   const o = v as Record<string, unknown>;
   const s = o.sections as Record<string, unknown> | undefined;
+  const nullableString = (value: unknown): boolean => value === null || typeof value === 'string';
+  const runtime = s?.['runtime'] as Record<string, unknown> | undefined;
+  const claims = s?.['claims'] as Record<string, unknown> | undefined;
+  const bridge = s?.['bridge'] as Record<string, unknown> | undefined;
+  const task = s?.['task'] as Record<string, unknown> | undefined;
   return o.schema === RECHECK_RECORD_SCHEMA && typeof o.asOf === 'string' && typeof o.overall === 'string'
     && typeof s === 'object' && s !== null
     && ['runtime', 'claims', 'bridge', 'task'].every(k => typeof (s[k] as Record<string, unknown> | undefined)?.state === 'string')
+    && typeof runtime?.host === 'string' && typeof runtime.installedVersion === 'string' && typeof runtime.asOf === 'string'
+    && (claims?.active === null || (typeof claims?.active === 'number' && Number.isInteger(claims.active) && claims.active >= 0))
+    && typeof claims?.asOf === 'string'
+    && nullableString(bridge?.missingBridge) && typeof bridge?.asOf === 'string'
+    && nullableString(task?.id) && nullableString(task?.owner) && nullableString(task?.claimReceipt) && typeof task?.asOf === 'string'
     && (s['missing'] === undefined || s['missing'] === null || isMissing(s['missing']));
 }
 
