@@ -19,9 +19,10 @@
  * attribution never cross this boundary.
  */
 import { parseOrderAt } from '../cli/fleet-orders.js';
-import { classifyOrder, mostAdvancedJob, type LiveJobIds } from '../core/fleet/order-work-state.js';
+import { classifyWorkItem } from '../core/comms/work-item-state.js';
+import { orderEvidence, mostAdvancedJob, type LiveJobIds } from '../core/fleet/order-work-state.js';
 import { heldLaneBlocker } from '../core/fleet/order-lane-blocker.js';
-import { readOrderTrace, type OrderTraceJob, type OrderTraceV1 } from '../core/fleet/order-trace.js';
+import { readOrderTrace, type OrderTraceV1 } from '../core/fleet/order-trace.js';
 import { readLaneTargets, type LaneTargetsV1 } from '../core/fleet/runs-lane-targets.js';
 import { listLiveWorkers, type LiveWorkersSnapshot } from '../core/fleet/runs-live-workers.js';
 import { sanitizePublicJson } from '../core/util/public-json.js';
@@ -72,7 +73,7 @@ const OWNER_LANE = /^[a-z0-9][a-z0-9-]{0,31}$/;
 /** The job carrying the order, sanitized for this boundary: null when no
  * trace job qualifies, lane null when the lane is absent or outside the
  * lane-id shape. */
-function orderOwner(job: OrderTraceJob | undefined): { job: string; lane: string | null } | null {
+function orderOwner(job: { id: string; lane: string | null } | undefined): { job: string; lane: string | null } | null {
   if (job === undefined || !OWNER_JOB.test(job.id)) return null;
   return { job: job.id, lane: job.lane !== null && OWNER_LANE.test(job.lane) ? job.lane : null };
 }
@@ -145,14 +146,22 @@ export async function readFleetOrderState(deps: FleetOrderStateDeps = {}): Promi
     live: liveState,
     lanes: lanesState,
     orders: orders.slice(0, FLEET_ORDER_STATE_LIMIT).map((o) => {
-      const c = classifyOrder(o, trace.generatedAt, nowIso, live, lanes);
-      const job = mostAdvancedJob(o);
+      const evidence = orderEvidence(o, trace.generatedAt, live, lanes);
+      const c = classifyWorkItem(evidence, nowIso);
+      // Owner and pr name the same evidence that produced the state: the
+      // claimReceipt job (merged artifact, live running job or fallback
+      // claim) and its verified artifact — never a stopped sibling. Only a
+      // claim-less order (queued hint or no jobs) still names the most
+      // advanced job, and that stays a hint, never a claim.
+      const owner = evidence.claimReceipt !== undefined
+        ? orderOwner({ id: evidence.claimReceipt, lane: evidence.owner ?? null })
+        : orderOwner(mostAdvancedJob(o));
       return {
         at: o.at, source: o.source, key: o.key,
         state: c.state, asOf: c.asOf, evidenceSource: c.source,
         missing: c.missing, blocker: lanes !== undefined && c.state === 'BLOCKED' ? heldLaneBlocker(o, lanes)?.dependency ?? null : null,
-        pr: job?.url ?? null,
-        owner: orderOwner(job),
+        pr: evidence.verified?.artifact ?? null,
+        owner,
       };
     }),
   });
