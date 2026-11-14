@@ -2,7 +2,10 @@
  * readFleetRecheck() result `ashlr fleet recheck` and the Slack reply use, so
  * the desktop strip need not re-derive REACHABLE/BLOCKED client-side.
  * Read-only: never appends to the recheck log, never sends, grants nothing.
- * `?history=N` (1..50) adds the retained rows via readRecheckRecords. */
+ * `?history=N` (1..50) adds the retained rows via readRecheckRecords, plus the
+ * read's `outcome`/`failure` as top-level fields when the reader supplies them,
+ * so absent history, a successful empty read and a failed read stay distinct
+ * while `history` keeps its pinned {rows, skipped, missing} projection. */
 import type { ApiModule } from './api-modules.js';
 import { sendJson } from '../web/api.js';
 import { ashlrHome } from '../cloud/store.js';
@@ -48,8 +51,13 @@ export function createFleetRecheckApi(deps: FleetRecheckApiDeps = {}): ApiModule
       sendJson(res, 200, { recheck });
       return true;
     }
-    const { rows, skipped, missing } = readRecheckRecords(home(), last);
-    sendJson(res, 200, { recheck, history: { rows, skipped, missing } });
+    const { rows, skipped, missing, outcome, failure } = readRecheckRecords(home(), last);
+    sendJson(res, 200, {
+      recheck,
+      history: { rows, skipped, missing },
+      ...(outcome !== undefined ? { outcome } : {}),
+      ...(failure !== undefined ? { failure } : {}),
+    });
     return true;
   };
 }
