@@ -7,7 +7,12 @@
  * queue/slots.json): an order whose every job is queued on a held lane names
  * the held lane as its dependency, never the hold reason. Read-only: reads local files and the host
  * process table, no network, no writes; never prints order text bodies,
- * command lines or pids. */
+ * command lines or pids.
+ *
+ * Each reader is time-bounded (8 s per reader, injectable via `timeoutMs`):
+ * a trace read that throws or times out exits 1 with the sanitized trace
+ * error; a live or lanes read that throws or times out leaves that source
+ * 'unavailable' so RUNNING/BLOCKED are never claimed on stalled evidence. */
 import { heldLaneBlocker } from '../core/fleet/order-lane-blocker.js';
 import { classifyOrder, mostAdvancedJob, type LiveJobIds, type TraceOrder } from '../core/fleet/order-work-state.js';
 import { readOrderTrace, type OrderTraceV1 } from '../core/fleet/order-trace.js';
@@ -17,12 +22,33 @@ import { parseOrderAt } from './fleet-orders.js';
 
 const usage = 'Usage: ashlr fleet order-state [--since <hours 1-720>] [--json]';
 const LIMIT = 20;
+/** Per-reader bound, matching the MCP reader's FLEET_ORDER_STATE_TIMEOUT_MS. */
+const TIMEOUT_MS = 8_000;
+
+/** Bounded read: a throw or timeout rejects so the caller can degrade. The
+ * losing promise is abandoned, never awaited, so a late settlement cannot
+ * print or mutate this or any later invocation. */
+async function bounded<T>(run: () => Promise<T>, timeoutMs: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      run(),
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error('timeout')), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
 
 export async function cmdFleetOrderState(
   args: string[],
   deps: {
     read?: typeof readOrderTrace; now?: () => number;
     live?: () => Promise<LiveWorkersSnapshot>; lanes?: () => Promise<LaneTargetsV1>;
+    /** Per-reader bound in ms (default 8000). */
+    timeoutMs?: number;
   } = {},
 ): Promise<number> {
   if (args.length === 1 && ['--help', '-h'].includes(args[0]!)) { console.log(usage); return 0; }
@@ -38,9 +64,10 @@ export async function cmdFleetOrderState(
       since = hours;
     } else { console.error(`fleet order-state: bad argument: ${arg}\n${usage}`); return 2; }
   }
+  const timeoutMs = deps.timeoutMs ?? TIMEOUT_MS;
   let trace: OrderTraceV1;
   try {
-    trace = await (deps.read ?? readOrderTrace)({ now: deps.now });
+    trace = await bounded(() => (deps.read ?? readOrderTrace)({ now: deps.now }), timeoutMs);
   } catch {
     console.error('fleet order-state: unable to read the order trace');
     return 1;
@@ -50,7 +77,7 @@ export async function cmdFleetOrderState(
   let live: LiveJobIds | undefined;
   let liveState: 'healthy' | 'unavailable';
   try {
-    const snapshot = await (deps.live ?? listLiveWorkers)();
+    const snapshot = await bounded(deps.live ?? listLiveWorkers, timeoutMs);
     liveState = snapshot.sourceState;
     if (liveState === 'healthy') live = { jobIds: new Set(snapshot.workers.map((w) => w.job)), at: snapshot.generatedAt };
   } catch {
@@ -60,7 +87,7 @@ export async function cmdFleetOrderState(
   // yields no blocker evidence, so BLOCKED is simply not claimed.
   let lanes: LaneTargetsV1 | undefined;
   try {
-    const targets = await (deps.lanes ?? readLaneTargets)();
+    const targets = await bounded(deps.lanes ?? readLaneTargets, timeoutMs);
     if (targets.sourceState === 'healthy') lanes = targets;
   } catch { /* lanes stays undefined: no blocker evidence */ }
   const lanesState: 'healthy' | 'unavailable' = lanes === undefined ? 'unavailable' : 'healthy';
