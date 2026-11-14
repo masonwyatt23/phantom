@@ -4,6 +4,8 @@
  * prose. Pure: no I/O, no clock — the caller passes `nowIso`.
  *
  * Honesty bounds of this source:
+ * - a routing lane and job id do not identify a worker or prove a durable
+ *   claim, so neither owner nor claimReceipt is synthesized here;
  * - the trace keeps no fresh per-job timestamp, so `runningEvidence` is never
  *   synthesized here and RUNNING stays unreachable;
  * - the trace carries no dependency edge, so `blocker` is never set and
@@ -35,19 +37,14 @@ export function pullRequest(url: string | null): { url: string; pr: number } | n
   return m ? { url, pr: Number(m[1]) } : null;
 }
 
-/** Evidence for one order. A queued line is not a claim: it can name an
- * owner (the routed lane) but never a durable claim receipt. Launched or
- * published jobs are real claims (owner + job id); merged jobs additionally
- * verify the order when the trace recorded a github pull URL. */
+/** Evidence for one order. The trace proves receipt and, for a merged job
+ * with a GitHub pull URL, an artifact. It cannot prove a named owner or claim. */
 export function orderEvidence(order: TraceOrder, traceGeneratedAt: string): WorkItemEvidence {
   const evidence: WorkItemEvidence = { id: order.key };
   const received = parseOrderAt(order.at);
   if (received !== null) evidence.receivedAt = new Date(received).toISOString();
   const job = mostAdvancedJob(order);
   if (job === undefined) return evidence;
-  if (job.lane !== null) evidence.owner = job.lane;
-  if (job.state === 'queued') return evidence;
-  evidence.claimReceipt = job.id;
   if (job.state !== 'merged') return evidence;
   const pull = pullRequest(job.url);
   if (pull !== null) {
