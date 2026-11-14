@@ -108,6 +108,8 @@ export interface FleetRecheckTaskPick {
   ledgerClaim: { id: string; repo: string; expiresAt: string } | null;
   asOf: string;
   source: string;
+  /** Running evidence for the pick; null unless the board item is RUNNING (fresh, non-future). */
+  execution: { state: 'RUNNING'; source: string; at: string } | null;
 }
 
 export interface FleetRecheckTask {
@@ -342,6 +344,9 @@ function taskSection(
       claimReceipt: pick.claimReceipt,
       asOf: pick.asOf,
       source: pick.source,
+      execution: pick.state === 'RUNNING'
+        ? { state: 'RUNNING' as const, source: pick.source, at: pick.asOf }
+        : null,
     };
     if (ledgerBoard === undefined || !Number.isFinite(nowMs)) {
       section.state = 'UNKNOWN';
@@ -359,7 +364,9 @@ function taskSection(
       return section;
     }
     section.state = 'VERIFIED';
-    section.missing = [];
+    // An ASSIGNED pick stays VERIFIED (owner + live claim hold) but is flagged
+    // so it never reads like a running task.
+    section.missing = base.execution === null ? [`task: ${pick.id} ASSIGNED, no running evidence yet`] : [];
     section.task = {
       ...base,
       ledgerClaim: { id: claim.id, repo: claim.repo, expiresAt: new Date(claim.expiresAt).toISOString() },

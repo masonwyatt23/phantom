@@ -55,7 +55,10 @@ export function formatRecheckReply(r: FleetRecheck): string {
       + `${bridge.missingBridge === null ? '' : ` · missing: ${scrub(bridge.missingBridge)}`} (${bridge.state})`,
     task.task === null
       ? `Task: none, ${scrub(task.missing[0] ?? 'no task evidence')} (${task.state})`
-      : `Task: ${scrub(task.task.id)} ${task.task.state} · owner ${scrub(task.task.owner)} · claim ${scrub(task.task.claimReceipt)} (${task.state})`,
+      : `Task: ${scrub(task.task.id)} ${task.task.state} · owner ${scrub(task.task.owner)} · claim ${scrub(task.task.claimReceipt)}`
+        + `${task.task.execution == null
+          ? ' · no running evidence yet'
+          : ` · exec running since ${scrub(task.task.execution.at)} (${scrub(task.task.execution.source)})`} (${task.state})`,
     r.overall.state === 'VERIFIED'
       ? 'Evidence only; this reply grants no dispatch.'
       : r.overall.state === 'BLOCKED'

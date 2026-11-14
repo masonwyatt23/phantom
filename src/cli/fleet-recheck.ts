@@ -39,7 +39,7 @@ function textLines(recheck: FleetRecheck): string[] {
       `${channel('slack')} ${channel('imessage')} missing=${bridge.missingBridge ?? 'none'}`),
     line('TASK', task.state, task.asOf, task.source,
       `id=${pick?.id ?? 'none'} state=${pick?.state ?? 'none'} owner=${pick?.owner ?? 'none'} `
-      + `claim=${pick?.claimReceipt ?? 'none'} missing=${task.missing[0] ?? 'none'}`),
+      + `claim=${pick?.claimReceipt ?? 'none'} exec=${pick?.execution ? `RUNNING@${pick.execution.at}` : 'none'} missing=${task.missing[0] ?? 'none'}`),
     line('OVERALL', recheck.overall.state, recheck.asOf, 'fleet-recheck',
       `missing=${recheck.overall.missing.length} first=${recheck.overall.missing[0] ?? 'none'}`),
   ];
