@@ -2,7 +2,7 @@
  * RQ-SWE3-COMMS-DEPTH-1: the unified comms inbox — one prioritized view over
  * every pending comms item, each carrying the deep-link command that acts on it.
  *
- *   readUnifiedInbox(opts) — aggregates six local, read-only sources:
+ *   readUnifiedInbox(opts) — aggregates seven local, read-only sources:
  *
  *   needs-you   NEEDS-MASON.md ledger lines still unresolved
  *               (`phm fleet needs`), act: `phm fleet needs-resolve`.
@@ -24,6 +24,11 @@
  *               drop folder `<runsDir>/comms/linkedin/inbox/` (see
  *               linkedin-drop.ts). Replies stay drafts (`phm drafts list
  *               --status pending`); nothing is sent from here.
+ *   slack       unanswered Slack requests with no same-thread reply, from the
+ *               Slack bridge reply journal (`phm channels slack status`). The
+ *               journal holds ids and times only, so items carry channel id,
+ *               thread ts and age: RECEIVED, not ASSIGNED. Only the oldest few
+ *               are listed; `pending` is the full unanswered count.
  *
  * Ordering is the same deterministic contract the Needs-you surfaces use
  * (decide/needs-you.ts): severity band first, then the pure priority
@@ -44,6 +49,7 @@ import { inspectBusWorkClaims, type BusWorkClaimsInspection } from '../fleet/bus
 import { readNeedsMason, type NeedsMasonItem, type NeedsMasonReadResult } from '../fleet/needs-mason-resolve.js';
 import { gmailArchivePlanLatestPath, readGmailArchivePlanLatest } from './gmail-archive-plan-latest.js';
 import { readLinkedInDrop, type LinkedInMessage } from './linkedin-drop.js';
+import { buildSlackBridgeStatus } from '../agents/slack-status.js';
 import { scrubSecrets } from '../util/scrub.js';
 import { classifyTeammateIntent, readTeammateTexts, type TeammateText } from './imessage-teammate-inbox.js';
 
@@ -52,9 +58,9 @@ const TITLE_MAX = 160;
 const DETAIL_MAX = 300;
 const SUGGESTED_LEASE_MS = 600_000;
 
-export type UnifiedInboxSource = 'needs-you' | 'imessage' | 'drafts' | 'bus' | 'gmail' | 'linkedin';
+export type UnifiedInboxSource = 'needs-you' | 'imessage' | 'drafts' | 'bus' | 'gmail' | 'linkedin' | 'slack';
 export type UnifiedInboxSourceState = 'healthy' | 'missing' | 'degraded' | 'unavailable';
-export type UnifiedInboxKind = 'needs-you' | 'teammate-text' | 'draft-approval' | 'bus-work' | 'gmail-over-target' | 'linkedin-message';
+export type UnifiedInboxKind = 'needs-you' | 'teammate-text' | 'draft-approval' | 'bus-work' | 'gmail-over-target' | 'linkedin-message' | 'slack-request';
 
 export interface UnifiedInboxItem extends AttentionItem {
   /** Stable, namespaced: `<source>:<ref>` (e.g. `drafts:d-0123…`). */
@@ -106,6 +112,9 @@ export interface UnifiedInboxOptions {
   readClaims?: (root?: string) => BusWorkClaimsInspection;
   readGmailPlans?: typeof readGmailArchivePlanLatest;
   readLinkedIn?: typeof readLinkedInDrop;
+  readSlackStatus?: typeof buildSlackBridgeStatus;
+  /** Slack transport state root (tests); default is the bridge's own. */
+  slackStateRoot?: string;
 }
 
 const cap = (text: string, max: number): string => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
@@ -272,6 +281,36 @@ function linkedInItems(read: typeof readLinkedInDrop, runsDir: string | undefine
   return { report: { state: result.sourceState, pending: items.length }, items };
 }
 
+const SLACK_WARN_AFTER_MIN = 30;
+
+function slackItems(read: typeof buildSlackBridgeStatus, runsDir: string | undefined, stateRoot: string | undefined, now: () => number): { report: UnifiedInboxSourceReport; items: Omit<UnifiedInboxItem, 'priority'>[] } {
+  let replies: ReturnType<typeof buildSlackBridgeStatus>['replies'];
+  try { replies = read({ runsDir, stateRoot, now: () => new Date(now()) }).replies; }
+  catch { return { report: { state: 'unavailable', pending: 0 }, items: [] }; }
+  const state: UnifiedInboxSourceState = replies.state === 'ok' ? 'healthy' : replies.state;
+  // A degraded journal cannot vouch for its sample: list nothing rather than guess.
+  const sample = replies.state === 'degraded' ? [] : replies.unansweredSample;
+  const nowMs = now();
+  const items = sample.map((row): Omit<UnifiedInboxItem, 'priority'> => {
+    const minutes = Math.max(0, Math.floor((nowMs - Date.parse(row.at)) / 60_000));
+    return {
+      id: `slack:${row.channelId}:${row.messageTs}`,
+      source: 'slack',
+      kind: 'slack-request',
+      severity: minutes > SLACK_WARN_AFTER_MIN ? 'warn' : 'info',
+      blocking: false,
+      title: oneLine(`Slack request in ${row.channelId} waiting ${minutes}m, no same-thread reply`, TITLE_MAX),
+      // Honest state words: seen, not yet taken by anyone. Nothing here is a claim.
+      detail: oneLine(`thread ${row.threadTs} · RECEIVED, not ASSIGNED`, DETAIL_MAX),
+      since: row.at,
+      expiresAt: null,
+      act: ['phm channels slack status --json'],
+    };
+  });
+  // The full count, even though only the oldest few are listed.
+  return { report: { state, pending: replies.state === 'degraded' ? 0 : replies.unanswered }, items };
+}
+
 /**
  * One read-only pass over every pending comms source. Never throws; a failed
  * source reports its state and the rest still list.
@@ -284,6 +323,7 @@ export async function readUnifiedInbox(options: UnifiedInboxOptions = {}): Promi
   const bus = busItems(options);
   const gmail = gmailItems(options.readGmailPlans ?? readGmailArchivePlanLatest, options.runsDir);
   const linkedin = linkedInItems(options.readLinkedIn ?? readLinkedInDrop, options.runsDir, now);
+  const slack = slackItems(options.readSlackStatus ?? buildSlackBridgeStatus, options.runsDir, options.slackStateRoot, now);
 
   const sources: UnifiedInbox['sources'] = {
     'needs-you': needs.report,
@@ -292,8 +332,9 @@ export async function readUnifiedInbox(options: UnifiedInboxOptions = {}): Promi
     bus: bus.report,
     gmail: gmail.report,
     linkedin: linkedin.report,
+    slack: slack.report,
   };
-  const pending: Omit<UnifiedInboxItem, 'priority'>[] = [...needs.items, ...teammates.items, ...drafts.items, ...bus.items, ...gmail.items, ...linkedin.items];
+  const pending: Omit<UnifiedInboxItem, 'priority'>[] = [...needs.items, ...teammates.items, ...drafts.items, ...bus.items, ...gmail.items, ...linkedin.items, ...slack.items];
   const nowMs = now();
   const ranked: RankedAttentionItem<UnifiedInboxItem>[] = pending.map((partial) => {
     const item: UnifiedInboxItem = { ...partial, priority: needsYouPriorityHeuristic(partial, nowMs) };
