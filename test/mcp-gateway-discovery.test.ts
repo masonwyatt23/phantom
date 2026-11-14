@@ -4,6 +4,10 @@ import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprot
 import { runInLocusJobEnv } from '../src/core/integrations/locus-job-env.js';
 import { startGateway, probeServer, callBrowserTool } from '../src/core/mcp-gateway.js';
 import type { McpRegistry } from '../src/core/types.js';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { delimiter, dirname, join } from 'node:path';
+import { readToolCache, toolCachePath, writeToolCache } from '../src/core/mcp-tool-cache.js';
 
 type Listed = { tools: { name: string; description?: string; inputSchema?: object }[]; nextCursor?: string; _meta?: Record<string, unknown> };
 type Request = { params: { name: string; arguments?: Record<string, unknown> } };
@@ -102,6 +106,122 @@ function deferred<T>() {
   const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
   return { promise, resolve, reject };
 }
+
+describe('gateway disposable inventory cache', () => {
+  let home: string;
+  let command: string;
+  let script: string;
+  let file: string;
+  const now = 1_793_000_000_000;
+  const tools = [{ name: 'echo', inputSchema: { type: 'object' as const } }];
+  const spec = () => ({ name: 'fixture', command, args: [script], source: 'test' });
+  const seed = (entry: unknown) => {
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, JSON.stringify(entry));
+  };
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), 'gateway-inventory-'));
+    vi.stubEnv('HOME', home);
+    vi.spyOn(Date, 'now').mockReturnValue(now);
+    command = join(home, 'peer');
+    script = join(home, 'server.cjs');
+    writeFileSync(command, 'inert executable fixture');
+    writeFileSync(script, 'inert script fixture');
+    file = join(home, 'inventory', 'tools.json');
+  });
+  afterEach(() => rmSync(home, { recursive: true, force: true }));
+
+  it('round-trips only tool names and schemas, defaults schemas, and publishes privately without temporary leftovers', () => {
+    const extra = { name: 'echo', description: 'discarded metadata', inputSchema: { type: 'object' } };
+    writeToolCache(file, [extra, { name: 'no_args' }]);
+    const expected = [...tools, { name: 'no_args', inputSchema: { type: 'object' } }];
+    expect(readToolCache(file)).toEqual(expected);
+    expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual({ writtenAt: now, tools: expected });
+    expect(readdirSync(dirname(file))).toEqual(['tools.json']);
+    if (process.platform !== 'win32') {
+      expect(statSync(file).mode & 0o777).toBe(0o600);
+      expect(statSync(dirname(file)).mode & 0o777).toBe(0o700);
+    }
+    writeToolCache(file, []);
+    expect(readToolCache(file)).toEqual([]);
+  });
+
+  it.each([
+    [0, true], [86_399_999, true], [86_400_000, false], [-1, false],
+  ])('treats age %i ms as a cache hit: %s', (age, hit) => {
+    seed({ writtenAt: now - age, tools });
+    expect(readToolCache(file)).toEqual(hit ? tools : undefined);
+  });
+
+  it.each([
+    null,
+    {},
+    { writtenAt: 'invalid', tools },
+    { writtenAt: now, tools: {} },
+    { writtenAt: now, tools: [{ name: 'missing_schema' }] },
+    { writtenAt: now, tools: [{ name: 'echo', inputSchema: { type: 'string' } }] },
+    { writtenAt: now, tools: [{ name: '  ', inputSchema: { type: 'object' } }] },
+    { writtenAt: now, tools: [...tools, ...tools] },
+  ])('misses malformed inventory %# rather than returning partial tools', entry => {
+    seed(entry);
+    expect(readToolCache(file)).toBeUndefined();
+  });
+
+  it('misses corrupt, oversized and over-count inventories', () => {
+    seed({ writtenAt: now, tools });
+    writeFileSync(file, '{broken');
+    expect(readToolCache(file)).toBeUndefined();
+    writeFileSync(file, ' '.repeat(4 * 1024 * 1024 + 1));
+    expect(readToolCache(file)).toBeUndefined();
+    seed({ writtenAt: now, tools: Array.from({ length: 4097 }, (_, i) => ({ ...tools[0], name: `tool_${i}` })) });
+    expect(readToolCache(file)).toBeUndefined();
+  });
+
+  it('keeps cache unavailability nonfatal, including a blocked parent directory', () => {
+    expect(readToolCache(undefined)).toBeUndefined();
+    expect(readToolCache(file)).toBeUndefined();
+    expect(() => writeToolCache(undefined, tools)).not.toThrow();
+    writeFileSync(dirname(file), 'not a directory');
+    expect(() => writeToolCache(file, tools)).not.toThrow();
+    expect(readToolCache(file)).toBeUndefined();
+  });
+
+  it('normalizes environment ordering but invalidates changed values, specs, executable and script identities', () => {
+    const env = { PATH: home, FIXTURE_SETTING: 'synthetic-private-marker' };
+    const key = toolCachePath(spec(), env);
+    expect(key).toMatch(/[/\\][a-f0-9]{64}\.json$/);
+    expect(key).not.toContain(env.FIXTURE_SETTING);
+    expect(toolCachePath(spec(), { FIXTURE_SETTING: env.FIXTURE_SETTING, PATH: home })).toBe(key);
+    expect(toolCachePath(spec(), { ...env, FIXTURE_SETTING: 'changed' })).not.toBe(key);
+    expect(toolCachePath({ ...spec(), name: 'renamed' }, env)).not.toBe(key);
+    expect(toolCachePath({ ...spec(), args: [script, '--other'] }, env)).not.toBe(key);
+    writeFileSync(command, 'replacement executable with a different size');
+    const updated = toolCachePath(spec(), env);
+    expect(updated).toBeDefined();
+    expect(updated).not.toBe(key);
+    writeFileSync(script, 'replacement script with a different size');
+    expect(toolCachePath(spec(), env)).not.toBe(updated);
+  });
+
+  it('resolves PATH in order, tracks package versions, and misses unresolved or unreadable identities', () => {
+    const env = { PATH: [join(home, 'missing'), home].join(delimiter) };
+    const byName = { ...spec(), command: 'peer' };
+    const resolved = toolCachePath(byName, env);
+    expect(resolved).toBeDefined();
+    mkdirSync(join(home, 'missing'));
+    writeFileSync(join(home, 'missing', 'peer'), 'earlier PATH candidate');
+    expect(toolCachePath(byName, env)).not.toBe(resolved);
+    writeFileSync(join(home, 'package.json'), JSON.stringify({ version: '1.0.0' }));
+    const key = toolCachePath(spec(), env);
+    writeFileSync(join(home, 'package.json'), JSON.stringify({ version: '2.0.0' }));
+    expect(toolCachePath(spec(), env)).not.toBe(key);
+    writeFileSync(join(home, 'package.json'), '{broken');
+    expect(toolCachePath(spec(), env)).toBeUndefined();
+    expect(toolCachePath({ ...spec(), command: join(home, 'absent') }, {})).toBeUndefined();
+    expect(toolCachePath({ ...spec(), command: 'absent' }, { PATH: home })).toBeUndefined();
+  });
+});
 
 describe('gateway live tools discovery', () => {
   it('starts every lookup independently and merges reverse completion in registry order', async () => {
