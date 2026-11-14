@@ -1,10 +1,13 @@
 /** `ashlr fleet work-state` — classify work items as RECEIVED / ASSIGNED /
  * RUNNING / BLOCKED / VERIFIED from structured evidence (the Nov12 22:29 ET
- * reporting contract). Read-only: reads one local file, no network, no writes. */
+ * reporting contract). Read-only: reads one local file or the local claims table, no network, no writes. */
 import { readFileSync } from 'node:fs';
+import { isAbsolute } from 'node:path';
+import { inspectBusWorkClaims } from '../core/fleet/bus-work-claims.js';
+import { workItemEvidenceFromClaims } from '../core/comms/work-item-from-claims.js';
 import { classifyWorkItem, type WorkItemEvidence } from '../core/comms/work-item-state.js';
 
-const usage = 'Usage: ashlr fleet work-state --evidence <file.json> [--json]\nPrints one line per item: ID STATE as-of=... source=... missing=...\nThe file holds one WorkItemEvidence object or an array of them. Prose such as "routed" is never evidence. Read-only.';
+const usage = 'Usage: ashlr fleet work-state (--evidence <file.json> | --from-claims [--root <absolute dir>]) [--json]\n--from-claims classifies the durable bus claims table (a live lease is RUNNING; expired or completed stays ASSIGNED, never VERIFIED).\nPrints one line per item: ID STATE as-of=... source=... missing=...\nThe file holds one WorkItemEvidence object or an array of them. Prose such as "routed" is never evidence. Read-only.';
 const STRINGS = ['receivedAt', 'owner', 'claimReceipt'] as const;
 const NESTED: Record<string, string[]> = { runningEvidence: ['source', 'at'], blocker: ['dependency', 'source', 'at'], verified: ['head', 'tests', 'artifact', 'source', 'at'] };
 
@@ -28,12 +31,16 @@ function invalid(v: unknown, at: string): string | null {
 
 export async function cmdFleetWorkState(args: string[]): Promise<number> {
   if (args.length === 1 && ['--help', '-h'].includes(args[0]!)) { console.log(usage); return 0; }
-  let file: string | undefined, json = false;
+  let file: string | undefined, json = false, fromClaims = false, root: string | undefined;
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--json' && !json) json = true;
+    else if (args[i] === '--from-claims' && !fromClaims) fromClaims = true;
+    else if (args[i] === '--root' && root === undefined && args[i + 1] && !args[i + 1]!.startsWith('-')) root = args[++i];
     else if (args[i] === '--evidence' && file === undefined && args[i + 1] && !args[i + 1]!.startsWith('-')) file = args[++i];
     else { console.error(usage); return 2; }
   }
+  if (fromClaims === (file !== undefined) || (root !== undefined && (!fromClaims || !isAbsolute(root)))) { console.error(usage); return 2; }
+  if (fromClaims) return workStateFromClaims(root, json);
   if (!file) { console.error(usage); return 2; }
   let parsed: unknown;
   try { parsed = JSON.parse(readFileSync(file, 'utf8')); }
@@ -47,5 +54,20 @@ export async function cmdFleetWorkState(args: string[]): Promise<number> {
   const results = (items as WorkItemEvidence[]).map(e => ({ id: e.id, ...classifyWorkItem(e, nowIso) }));
   if (json) console.log(JSON.stringify(results));
   else for (const r of results) console.log(`${r.id} ${r.state} as-of=${r.asOf} source=${r.source} missing=${r.missing.length ? r.missing.join(',') : 'none'}`);
+  return 0;
+}
+
+function workStateFromClaims(root: string | undefined, json: boolean): number {
+  const inspection = inspectBusWorkClaims(root);
+  if (inspection.source === 'unavailable') { console.error('error: claims table unavailable'); return 1; }
+  if (inspection.source === 'missing') {
+    if (json) console.log(JSON.stringify({ source: 'missing', items: [] }));
+    else console.log('no claims recorded (source missing)');
+    return 0;
+  }
+  const now = new Date(), nowIso = now.toISOString();
+  const items = workItemEvidenceFromClaims(inspection.claims, now.getTime()).map(e => ({ id: e.id, ...classifyWorkItem(e, nowIso) }));
+  if (json) console.log(JSON.stringify({ source: 'available', asOf: nowIso, items }));
+  else for (const r of items) console.log(`${r.id} ${r.state} as-of=${r.asOf} source=${r.source} missing=${r.missing.length ? r.missing.join(',') : 'none'}`);
   return 0;
 }
