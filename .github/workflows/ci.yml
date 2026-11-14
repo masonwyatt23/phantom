@@ -1373,6 +1373,10 @@ jobs:
         working-directory: ${{ steps.tree.outputs.root }}
         env:
           PHANTOM_RELEASE_REVISION: ${{ github.sha }}
+          # tsc + vite on this tree exceed Node's ~2GB default old-space on
+          # macos-15; the cap is a ceiling, not a reservation, and build
+          # steps run sequentially so 5GB stays under the runner's 7GB.
+          NODE_OPTIONS: --max-old-space-size=5120
         run: |
           npm run build:desktop:nightly -- --existing-icons
           node scripts/release-isolated-tree.mjs verify .
