@@ -1,4 +1,4 @@
-/** RQ-PHX-FLEETRECHECK324 — `fleet recheck` joins four readers into one
+/** RQ-PHX-FLEETRECHECK324 — `fleet recheck` joins five readers into one
  * sanitized read-only verdict. Every reader is faked here: nothing touches the
  * real home, ledger, bus or network. Fixtures are plainly fake; no message
  * bodies, leases or env values appear. */
@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cmdFleetRecheck } from '../src/cli/fleet-recheck.js';
 import { FLEET_SUBCOMMAND_LOADERS } from '../src/cli/fleet-subcommand-registry.js';
 import { readFleetRecheck, type FleetRecheckDeps } from '../src/core/fleet/fleet-recheck.js';
+import type { BusWorkClaimsInspection } from '../src/core/fleet/bus-work-claims.js';
 import type { ChannelHealth, ChannelHealthReport } from '../src/core/fleet/channel-health.js';
 import type { FleetBoard } from '../src/core/fleet/coordination.js';
 import type { RuntimeIdentity } from '../src/core/fleet/runtime-identity.js';
@@ -61,6 +62,16 @@ function fakeItem(over: Partial<WorkBoardItem> = {}): WorkBoardItem {
 
 const healthyWork: WorkBoardResult = { items: [fakeItem()], inbox: 'ok', truncated: false };
 
+/** The claim row the board bound to fake-request-1's receipt: same id, cursor
+ * and receivedAt, same owner, uncompleted, lease live at the verdict now. */
+const healthyBusClaims: BusWorkClaimsInspection = {
+  source: 'available',
+  claims: [{
+    id: 'fake-request-1', cursor: 1, receivedAt: 1_700_000_000_000,
+    owner: 'fake-owner-agent', leaseUntil: NOW_MS + 3_600_000, completedAt: null,
+  }],
+};
+
 function deps(over: Partial<FleetRecheckDeps> = {}): FleetRecheckDeps {
   return {
     now: () => NOW,
@@ -69,6 +80,7 @@ function deps(over: Partial<FleetRecheckDeps> = {}): FleetRecheckDeps {
     readFleetBoard: () => healthyBoard,
     readChannelHealth: () => healthyChannels,
     listWorkBoard: () => healthyWork,
+    inspectBusWorkClaims: () => healthyBusClaims,
     ...over,
   };
 }
@@ -102,7 +114,14 @@ describe('readFleetRecheck', () => {
     ]);
     expect(recheck.sections.task).toMatchObject({
       state: 'VERIFIED', unowned: 0, unclaimed: 0, missing: [],
-      task: { id: 'fake-request-1', state: 'RUNNING', owner: 'fake-owner-agent' },
+      task: {
+        id: 'fake-request-1', state: 'RUNNING', owner: 'fake-owner-agent',
+        ledgerClaim: null,
+        busClaim: {
+          owner: 'fake-owner-agent',
+          leaseUntil: new Date(NOW_MS + 3_600_000).toISOString(), completedAt: null,
+        },
+      },
     });
     expect(recheck.overall).toEqual({ state: 'VERIFIED', missing: [] });
   });
@@ -199,7 +218,9 @@ describe('readFleetRecheck', () => {
     const work: WorkBoardResult = {
       inbox: 'ok', truncated: false,
       items: [
-        fakeItem({ id: 'new-assigned', state: 'ASSIGNED', receivedAt: '2026-11-13T11:59:00.000Z' }),
+        // Its receipt binds no claim row, so the verify-first preference skips
+        // it and the fallback ordering (RUNNING first) decides.
+        fakeItem({ id: 'new-assigned', state: 'ASSIGNED', receivedAt: '2026-11-13T11:59:00.000Z', claimReceipt: 'bus-claim:new-assigned:2:1700000000001' }),
         fakeItem({ id: 'old-running', state: 'RUNNING', receivedAt: '2026-11-13T11:50:00.000Z' }),
       ],
     };
@@ -215,7 +236,7 @@ describe('readFleetRecheck', () => {
     expect(recheck.sections.task.missing.join('\n')).toContain('inbox unavailable');
   });
 
-  it('a throwing ledger reader marks claims UNKNOWN and the owner claim unverified', async () => {
+  it('a throwing ledger reader marks claims UNKNOWN while the task still verifies on its bus claim', async () => {
     const recheck = await readFleetRecheck(deps({
       readFleetBoard: () => { throw new Error('ledger exploded'); },
     }));
@@ -224,8 +245,8 @@ describe('readFleetRecheck', () => {
     });
     expect(recheck.sections.runtime.state).toBe('VERIFIED');
     expect(recheck.sections.bridge.state).toBe('VERIFIED');
-    // The task pick survives but its owner claim can no longer be proven.
-    expect(recheck.sections.task.state).toBe('UNKNOWN');
+    // The ledger no longer gates the task: the bound bus claim still proves it.
+    expect(recheck.sections.task.state).toBe('VERIFIED');
     expect(recheck.overall.state).toBe('UNKNOWN');
     expect(recheck.overall.missing).toContain('claims: reader failed');
   });

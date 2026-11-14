@@ -3,9 +3,10 @@
  * {id, repo, task, agent, claimedAt, expiresAt} shares no explicit identity
  * field with WorkBoardItem {id, owner, claimReceipt}: the receipt is a
  * bus-work-claims coordinate, claim.task is free text and claim.id is a
- * ledger uuid, so owner equality alone is not task identity. Until a producer
- * contract names the association the section reports the observed pick as
- * UNKNOWN with ledgerClaim null and an exact missing-association reason.
+ * ledger uuid, so owner equality alone is not task identity and ledgerClaim
+ * stays null. Since RQ-PHX-RECHECKBUSCLAIMVERIFY328 the verdict instead joins
+ * the pick to the bus-work-claims row its receipt binds; with that reader
+ * faked 'missing' here the section reports UNKNOWN naming the table state.
  * Every reader is faked here: nothing touches the real home, ledger, bus or
  * network. Fixtures are plainly fake; no message bodies, leases or env values
  * appear. */
@@ -74,11 +75,12 @@ function deps(over: Partial<FleetRecheckDeps> = {}): FleetRecheckDeps {
     readFleetBoard: () => healthyBoard,
     readChannelHealth: () => healthyChannels,
     listWorkBoard: () => healthyWork,
+    inspectBusWorkClaims: () => ({ source: 'missing', claims: [] }),
     ...over,
   };
 }
 
-const ASSOCIATION_MISSING = 'task: no coordination-claim field associates a claim with board item fake-request-1; owner match is not task identity';
+const BUS_CLAIMS_MISSING = 'task: bus work claims missing';
 
 describe('fleet recheck task ↔ ledger binding', () => {
   it('reports UNKNOWN, never VERIFIED, when the owner holds a live claim for an unrelated task/repo/id', async () => {
@@ -93,7 +95,7 @@ describe('fleet recheck task ↔ ledger binding', () => {
     expect(ledgerReads).toBe(1);
     const task = recheck.sections.task;
     expect(task.state).toBe('UNKNOWN');
-    expect(task.missing).toEqual([ASSOCIATION_MISSING]);
+    expect(task.missing).toEqual([BUS_CLAIMS_MISSING]);
     // The observed pick is retained verbatim; only the ledger join is refused.
     expect(task.task).toMatchObject({
       id: 'fake-request-1', state: 'RUNNING', owner: 'agent-alpha',
@@ -110,7 +112,7 @@ describe('fleet recheck task ↔ ledger binding', () => {
     const recheck = await readFleetRecheck(deps({ readFleetBoard: () => board }));
     expect(recheck.sections.task.state).toBe('UNKNOWN');
     expect(recheck.sections.task.task?.ledgerClaim).toBeNull();
-    expect(recheck.sections.task.missing).toEqual([ASSOCIATION_MISSING]);
+    expect(recheck.sections.task.missing).toEqual([BUS_CLAIMS_MISSING]);
   });
 
   it('never selects the newest of two live claims for one owner as task identity', async () => {
@@ -124,12 +126,12 @@ describe('fleet recheck task ↔ ledger binding', () => {
     const recheck = await readFleetRecheck(deps({ readFleetBoard: () => board }));
     expect(recheck.sections.task.state).toBe('UNKNOWN');
     expect(recheck.sections.task.task?.ledgerClaim).toBeNull();
-    expect(recheck.sections.task.missing).toEqual([ASSOCIATION_MISSING]);
+    expect(recheck.sections.task.missing).toEqual([BUS_CLAIMS_MISSING]);
     // The claims section still reports both live claims; liveness is unchanged.
     expect(recheck.sections.claims.active).toBe(2);
   });
 
-  it('stays UNKNOWN with the unreadable-ledger reason when the board reports state unknown', async () => {
+  it('stays UNKNOWN when the ledger board reports state unknown — the ledger no longer gates the task', async () => {
     let ledgerReads = 0;
     const board: FleetBoard = { ...healthyBoard, state: 'unknown', claims: [] };
     const recheck = await readFleetRecheck(deps({
@@ -138,8 +140,7 @@ describe('fleet recheck task ↔ ledger binding', () => {
     expect(ledgerReads).toBe(1);
     expect(recheck.sections.task.state).toBe('UNKNOWN');
     expect(recheck.sections.task.task?.ledgerClaim).toBeNull();
-    expect(recheck.sections.task.missing)
-      .toContain('task: claims ledger unreadable, owner claim unverified');
+    expect(recheck.sections.task.missing).toEqual([BUS_CLAIMS_MISSING]);
   });
 
   it('stays UNKNOWN when the ledger reader throws, and excludes expired and future claims', async () => {
@@ -148,8 +149,7 @@ describe('fleet recheck task ↔ ledger binding', () => {
     }));
     expect(thrown.sections.task.state).toBe('UNKNOWN');
     expect(thrown.sections.task.task?.ledgerClaim).toBeNull();
-    expect(thrown.sections.task.missing)
-      .toContain('task: claims ledger unreadable, owner claim unverified');
+    expect(thrown.sections.task.missing).toEqual([BUS_CLAIMS_MISSING]);
 
     const board: FleetBoard = {
       ...healthyBoard,
@@ -164,7 +164,7 @@ describe('fleet recheck task ↔ ledger binding', () => {
     expect(recheck.sections.claims.expiredClaims).toBe(1);
     expect(recheck.sections.task.state).toBe('UNKNOWN');
     expect(recheck.sections.task.task?.ledgerClaim).toBeNull();
-    expect(recheck.sections.task.missing).toEqual([ASSOCIATION_MISSING]);
+    expect(recheck.sections.task.missing).toEqual([BUS_CLAIMS_MISSING]);
   });
 
   it('preserves the observed ASSIGNED state without claiming execution from lease existence', async () => {
@@ -174,7 +174,7 @@ describe('fleet recheck task ↔ ledger binding', () => {
     expect(recheck.sections.task.task).toMatchObject({
       id: 'fake-request-1', state: 'ASSIGNED', owner: 'agent-alpha', ledgerClaim: null,
     });
-    expect(recheck.sections.task.missing).toEqual([ASSOCIATION_MISSING]);
+    expect(recheck.sections.task.missing).toEqual([BUS_CLAIMS_MISSING]);
   });
 
   it('still reports BLOCKED when no RUNNING or ASSIGNED item is qualified', async () => {

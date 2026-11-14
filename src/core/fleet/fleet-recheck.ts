@@ -1,16 +1,19 @@
 /**
- * core/fleet/fleet-recheck.ts: one read-only verdict joining the four runtime
+ * core/fleet/fleet-recheck.ts: one read-only verdict joining the five runtime
  * readers behind `ashlr fleet recheck` — runtime identity, the claims ledger,
- * channel health and the work board — so a single answer can say which host is
- * answering, whether shared state is fresh, which bridge is missing and which
- * authorized task is running. The task pick is joined against the same ledger
- * read used for the claims section, but no FleetClaim field identifies a
- * work-board item: claim.id is a ledger uuid, claim.task is free text, and the
- * item's claimReceipt is a bus-work-claims coordinate
- * (`bus-claim:<id>:<cursor>:<receivedAt>`), not a coordination claim id. Owner
- * equality alone is not task identity, so the task section reports the observed
- * pick with ledgerClaim null and an exact missing-association reason instead
- * of verifying on an owner's unrelated lease.
+ * channel health, the work board and the bus-work-claims table — so a single
+ * answer can say which host is answering, whether shared state is fresh, which
+ * bridge is missing and which authorized task is running. The task pick's
+ * identity is the bus-work-claims row the board bound it to: the board stamps
+ * `claimReceipt = bus-claim:<id>:<cursor>:<receivedAt>` only when a claim row
+ * matches its inbox receipt on all three coordinates, so rebuilding that
+ * string from each inspected row and comparing whole (never splitting — claim
+ * ids may contain ':') recovers the exact binding. The task verifies only when
+ * the claims table is available, exactly one row matches, the row's owner
+ * equals the board owner, the claim is not completed, and its lease is live at
+ * the verdict's clock. The coordination ledger no longer gates the verdict:
+ * an owner's live ledger claim stays a weak pick-ordering signal only, and
+ * ledgerClaim stays null because owner equality alone is not task identity.
  *
  * Every reader is injected (defaults come from the modules themselves), each
  * read is bounded at SECTION_TIMEOUT_MS, and a reader that throws or stalls
@@ -31,6 +34,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { ashlrHome } from '../cloud/store.js';
 import { listWorkBoard, type WorkBoardResult } from '../comms/work-board.js';
+import { inspectBusWorkClaims, type BusWorkClaimsInspection, type BusWorkClaimView } from './bus-work-claims.js';
 import { readChannelHealth, type ChannelHealth, type ChannelHealthReport, type ChannelName } from './channel-health.js';
 import { readFleetBoard, type FleetBoard, type FleetClaim } from './coordination.js';
 import {
@@ -109,8 +113,11 @@ export interface FleetRecheckTaskPick {
   state: 'RUNNING' | 'ASSIGNED';
   owner: string;
   claimReceipt: string;
-  /** Live ledger claim held by owner; null unless the join found one. */
+  /** Always null: no coordination-claim field names a board item, so a live
+   * ledger claim under the same owner never becomes task identity. */
   ledgerClaim: { id: string; repo: string; expiresAt: string } | null;
+  /** The bus-work-claims row the pick verified against; null until verified. */
+  busClaim: { owner: string; leaseUntil: string; completedAt: string | null } | null;
   asOf: string;
   source: string;
 }
@@ -148,6 +155,7 @@ export interface FleetRecheckDeps {
   readChannelHealth?: () => ChannelHealthReport | Promise<ChannelHealthReport>;
   readFleetBoard?: () => FleetBoard | Promise<FleetBoard>;
   listWorkBoard?: () => WorkBoardResult | Promise<WorkBoardResult>;
+  inspectBusWorkClaims?: () => BusWorkClaimsInspection | Promise<BusWorkClaimsInspection>;
 }
 
 /** Live readers, wired exactly as the standalone fleet commands wire them. */
@@ -159,6 +167,7 @@ export function defaultFleetRecheckDeps(now: () => Date = () => new Date()): Req
     readChannelHealth: () => readChannelHealth(),
     readFleetBoard: () => readFleetBoard(),
     listWorkBoard: () => listWorkBoard({ root: join(ashlrHome(), 'fleet'), now: now().getTime() }),
+    inspectBusWorkClaims: () => inspectBusWorkClaims(join(ashlrHome(), 'fleet')),
   };
 }
 
@@ -302,10 +311,52 @@ function liveClaimFor(board: FleetBoard, owner: string, nowMs: number): FleetCla
   return best;
 }
 
+/** The receipt the board stamps for a claim row, rebuilt for comparison. The
+ * strings are compared whole and never split: a claim id may itself contain
+ * ':', so only exact equality of all three coordinates proves the binding. */
+function busClaimReceipt(row: BusWorkClaimView): string {
+  return `bus-claim:${row.id}:${row.cursor}:${row.receivedAt}`;
+}
+
+/** The bus-work-claims row an item verifies against, or the one exact reason
+ * it cannot: a failed or non-'available' inspection, no single row matching
+ * the receipt, an owner mismatch, a completed claim, an unreadable verdict
+ * clock, or a lease already dead at the captured now. */
+function busClaimVerdict(
+  claimsRead: { ok: true; value: BusWorkClaimsInspection } | { ok: false },
+  item: { owner: string; claimReceipt: string },
+  nowMs: number,
+): { verified: true; row: BusWorkClaimView } | { verified: false; missing: string } {
+  if (!claimsRead.ok) return { verified: false, missing: 'task: bus work claims reader failed' };
+  const inspection = claimsRead.value;
+  if (inspection.source !== 'available') {
+    return { verified: false, missing: `task: bus work claims ${inspection.source}` };
+  }
+  const matches = inspection.claims.filter(row => busClaimReceipt(row) === item.claimReceipt);
+  if (matches.length !== 1) {
+    return { verified: false, missing: `task: no bus claim row matches receipt ${item.claimReceipt}` };
+  }
+  const row = matches[0]!;
+  if (row.owner !== item.owner) {
+    return { verified: false, missing: 'task: bus claim owner differs from board owner' };
+  }
+  if (row.completedAt !== null) {
+    return { verified: false, missing: `task: bus claim for ${row.id} completed at ${new Date(row.completedAt).toISOString()}` };
+  }
+  if (!Number.isFinite(nowMs)) {
+    return { verified: false, missing: 'task: verdict clock unknown, bus claim lease unverifiable' };
+  }
+  if (row.leaseUntil <= nowMs) {
+    return { verified: false, missing: `task: bus claim lease for ${row.id} expired at ${new Date(row.leaseUntil).toISOString()}` };
+  }
+  return { verified: true, row };
+}
+
 function taskSection(
   read: { ok: true; value: WorkBoardResult } | { ok: false },
   asOf: string,
   ledger: { ok: true; value: FleetBoard } | { ok: false },
+  busClaims: { ok: true; value: BusWorkClaimsInspection } | { ok: false },
   nowMs: number,
 ): FleetRecheckTask {
   const section: FleetRecheckTask = {
@@ -334,42 +385,31 @@ function taskSection(
   const ledgerBoard = ledger.ok && ledger.value.state === 'known' ? ledger.value : undefined;
   const liveFor = (owner: string): FleetClaim | undefined =>
     ledgerBoard === undefined ? undefined : liveClaimFor(ledgerBoard, owner, nowMs);
-  // Prefer a qualified item whose owner holds a live claim (RUNNING before
-  // ASSIGNED) as a weak liveness signal for the pick; only when none matches
-  // fall back to the plain newest-first pick. This ordering never verifies:
-  // no claim field binds a lease to the item.
+  // A qualified item whose bus claim verifies outranks every weaker signal:
+  // the first (newest-first) item that would verify is the pick. Otherwise the
+  // prior ordering applies — an owner holding a live coordination claim first
+  // (RUNNING before ASSIGNED), then the plain newest-first pick. Ordering never
+  // verifies the task; only the bound bus claim row does.
   const matched = qualified.filter(item => liveFor(item.owner) !== undefined);
-  const pick = matched.find(item => item.state === 'RUNNING') ?? matched[0]
+  const pick = qualified.find(item => busClaimVerdict(busClaims, item, nowMs).verified)
+    ?? matched.find(item => item.state === 'RUNNING') ?? matched[0]
     ?? qualified.find(item => item.state === 'RUNNING') ?? qualified[0];
   if (pick !== undefined) {
-    const base = {
+    const verdict = busClaimVerdict(busClaims, pick, nowMs);
+    section.task = {
       id: pick.id,
       state: pick.state as 'RUNNING' | 'ASSIGNED',
       owner: pick.owner,
       claimReceipt: pick.claimReceipt,
+      ledgerClaim: null,
+      busClaim: verdict.verified
+        ? { owner: verdict.row.owner, leaseUntil: new Date(verdict.row.leaseUntil).toISOString(), completedAt: null }
+        : null,
       asOf: pick.asOf,
       source: pick.source,
     };
-    if (ledgerBoard === undefined || !Number.isFinite(nowMs)) {
-      section.state = 'UNKNOWN';
-      section.task = { ...base, ledgerClaim: null };
-      section.missing = [ledgerBoard === undefined
-        ? 'task: claims ledger unreadable, owner claim unverified'
-        : 'task: verdict clock unknown, owner claim unverified'];
-      return section;
-    }
-    // The coordination ledger and the work board share no explicit identity
-    // field: FleetClaim {id, repo, task, agent, claimedAt, expiresAt} cannot be
-    // joined to a WorkBoardItem {id, owner, claimReceipt} — the receipt is a
-    // bus-work-claims coordinate, claim.task is free text, and claim.id is a
-    // ledger uuid. Until a producer contract names the association, owner
-    // equality proves nothing about this task, so the pick stays UNKNOWN with
-    // ledgerClaim null rather than verifying on an unrelated lease.
-    section.state = 'UNKNOWN';
-    section.task = { ...base, ledgerClaim: null };
-    section.missing = [
-      `task: no coordination-claim field associates a claim with board item ${pick.id}; owner match is not task identity`,
-    ];
+    section.state = verdict.verified ? 'VERIFIED' : 'UNKNOWN';
+    section.missing = verdict.verified ? [] : [verdict.missing];
     return section;
   }
   section.state = 'BLOCKED';
@@ -390,19 +430,20 @@ export async function readFleetRecheck(deps: FleetRecheckDeps = {}): Promise<Fle
   const home = (() => { try { return d.homeDir(); } catch { return ''; } })();
   const asOf = Number.isFinite(nowMs) ? now.toISOString() : UNKNOWN;
 
-  // All four readers run concurrently, each inside its own 5 s bound.
-  const [runtime, claims, bridge, board] = await Promise.all([
+  // All five readers run concurrently, each inside its own 5 s bound.
+  const [runtime, claims, bridge, board, busClaims] = await Promise.all([
     attempt(d.readRuntimeIdentity),
     attempt(d.readFleetBoard),
     attempt(d.readChannelHealth),
     attempt(d.listWorkBoard),
+    attempt(d.inspectBusWorkClaims),
   ]);
 
   const sections = {
     runtime: runtimeSection(runtime, asOf),
     claims: claimsSection(claims, asOf, nowMs),
     bridge: bridgeSection(bridge, asOf),
-    task: taskSection(board, asOf, claims, nowMs),
+    task: taskSection(board, asOf, claims, busClaims, nowMs),
   };
   const states = Object.values(sections).map(section => section.state);
   const verified = states.every(state => state === 'VERIFIED');

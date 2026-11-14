@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cmdFleetRecheck } from '../src/cli/fleet-recheck.js';
 import { readFleetRecheck, type FleetRecheck, type FleetRecheckDeps } from '../src/core/fleet/fleet-recheck.js';
 import { formatRecheckReply } from '../src/core/fleet/fleet-recheck-reply.js';
+import type { BusWorkClaimsInspection } from '../src/core/fleet/bus-work-claims.js';
 import type { ChannelHealth, ChannelHealthReport } from '../src/core/fleet/channel-health.js';
 import type { FleetBoard } from '../src/core/fleet/coordination.js';
 import type { RuntimeIdentity } from '../src/core/fleet/runtime-identity.js';
@@ -58,6 +59,16 @@ function fakeItem(over: Partial<WorkBoardItem> = {}): WorkBoardItem {
 
 const healthyWork: WorkBoardResult = { items: [fakeItem()], inbox: 'ok', truncated: false };
 
+/** The claim row the board bound to fake-request-1's receipt: same id, cursor
+ * and receivedAt, same owner, uncompleted, lease live at the verdict now. */
+const healthyBusClaims: BusWorkClaimsInspection = {
+  source: 'available',
+  claims: [{
+    id: 'fake-request-1', cursor: 1, receivedAt: 1_700_000_000_000,
+    owner: 'fake-owner-agent', leaseUntil: NOW_MS + 3_600_000, completedAt: null,
+  }],
+};
+
 function deps(over: Partial<FleetRecheckDeps> = {}): FleetRecheckDeps {
   return {
     now: () => NOW,
@@ -66,6 +77,7 @@ function deps(over: Partial<FleetRecheckDeps> = {}): FleetRecheckDeps {
     readFleetBoard: () => healthyBoard,
     readChannelHealth: () => healthyChannels,
     listWorkBoard: () => healthyWork,
+    inspectBusWorkClaims: () => healthyBusClaims,
     ...over,
   };
 }
@@ -93,7 +105,12 @@ function handBuilt(over: Partial<FleetRecheck> = {}): FleetRecheck {
       },
       task: {
         state: 'VERIFIED', source: 'work-board', asOf: ISO,
-        task: { id: 'fake-request-1', state: 'RUNNING', owner: 'fake-owner-agent', claimReceipt: 'bus-claim:fake-request-1:1:1700000000000', asOf: ISO, source: 'fake-source' },
+        task: {
+          id: 'fake-request-1', state: 'RUNNING', owner: 'fake-owner-agent',
+          claimReceipt: 'bus-claim:fake-request-1:1:1700000000000', ledgerClaim: null,
+          busClaim: { owner: 'fake-owner-agent', leaseUntil: ISO, completedAt: null },
+          asOf: ISO, source: 'fake-source',
+        },
         unowned: 0, unclaimed: 0, missing: [],
       },
     },
@@ -159,6 +176,7 @@ describe('formatRecheckReply', () => {
           task: {
             id: 'fake-9', state: 'RUNNING',
             owner: 'agent-192.168.0.1', claimReceipt: '/home/fakeuser/claims/r1',
+            ledgerClaim: null, busClaim: null,
             asOf: ISO, source: 'fake-source',
           },
         },
