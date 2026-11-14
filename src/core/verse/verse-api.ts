@@ -485,6 +485,9 @@ const WORKBENCH_IMPORTS: Readonly<Record<WorkbenchRouteFamilyId, () => Promise<W
   'fleet-runtime-identity': async () => {
     try { return (await import('./fleet-runtime-identity-api.js' as string)) as Record<string, unknown>; } catch (err) { return notLandedOr(err, 'fleet-runtime-identity-api.js'); }
   },
+  'fleet-tailnet-peers': async () => {
+    try { return (await import('./fleet-tailnet-peers-api.js' as string)) as Record<string, unknown>; } catch (err) { return notLandedOr(err, 'fleet-tailnet-peers-api.js'); }
+  },
   'fleet-recheck': async () => {
     try { return (await import('./fleet-recheck-api.js' as string)) as Record<string, unknown>; } catch (err) { return notLandedOr(err, 'fleet-recheck-api.js'); }
   },
