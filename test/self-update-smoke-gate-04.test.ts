@@ -44,6 +44,16 @@ describe('self-update smoke gate', () => {
     expect(result).toMatchObject({ outcome: 'updated', restart: { required: true } });
   });
 
+  it.each([
+    { updated: false, upToDate: true },
+    { updated: false },
+    {},
+  ])('fails an explicit smoke failure regardless of update status: %j', async report => {
+    const result = await apply({ ...report, smokeOk: false, commitAfter });
+    expect(result).toMatchObject({ outcome: 'failed', reason: 'smoke test failed', toCommit: commitAfter, restart: { required: false } });
+    expect(result.steps.at(-1)).toMatchObject({ name: 'update', ok: false, note: 'smoke test failed' });
+  });
+
   it('accepts older updater reports without smokeOk', async () => {
     const result = await apply({ updated: true, commitAfter });
     expect(result.outcome).toBe('updated');
