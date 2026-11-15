@@ -18,7 +18,8 @@ interface Row {
 }
 
 function iso(ms: number): string {
-  return Number.isFinite(ms) ? new Date(ms).toISOString() : 'unknown';
+  const date = new Date(ms);
+  return Number.isFinite(date.getTime()) ? date.toISOString() : 'unknown';
 }
 
 // The task is quoted but unescaped by the writer, so consume through its final delimiter.
@@ -35,10 +36,12 @@ export function projectCoordinationReturns(board: FleetBoard | null, nowMs: numb
   let unparsed = 0;
   for (const message of board.messages) {
     if (!message.id.startsWith('return-')) continue;
+    const at = iso(message.at);
+    const expiresAt = iso(message.expiresAt);
     const match = RECEIPT.exec(message.body);
     const kind = match?.[6] ?? match?.[9];
     const pr = match?.[7] === undefined ? null : Number(match[7]);
-    if (!match || match[3] !== message.id.slice('return-'.length)
+    if (at === 'unknown' || expiresAt === 'unknown' || !match || match[3] !== message.id.slice('return-'.length)
       || (match[1] === 'BLOCKED') !== (kind === 'dependency')
       || (pr !== null && !Number.isSafeInteger(pr))
       || (match[10] !== undefined && !match[10].trim())) {
@@ -49,7 +52,7 @@ export function projectCoordinationReturns(board: FleetBoard | null, nowMs: numb
       claimId: match[3]!, repo: match[2]!, result: match[1] as Row['result'],
       evidenceKind: kind as Row['evidenceKind'], pr, head: match[8] ?? null,
       evidence: match[5]!.slice(0, 300), from: message.from,
-      at: iso(message.at), expiresAt: iso(message.expiresAt),
+      at, expiresAt,
     } });
   }
   return { ...base, state: 'known' as const,
