@@ -1323,6 +1323,7 @@ export async function handleApi(
     readProjections?: ReadProjectionReader;
     usageResourcesApi?: import('../verse/api-modules.js').ApiModule;
     mergeLatencyApi?: import('../verse/api-modules.js').ApiModule;
+    releaseLagApi?: import('../verse/api-modules.js').ApiModule;
   },
 ): Promise<boolean> {
   const path = reqPath(req);
@@ -2773,6 +2774,13 @@ export async function handleApi(
       const verseCtx = { cfg, token: ctx.token, allowDispatch: ctx.allowDispatch, readSession: ctx.readSession,
         usageResourcesApi: ctx.usageResourcesApi,
         ...(ctx.readProjections ? { readProjections: ctx.readProjections } : {}) };
+      // Read-only release evidence is supplied by the HTTP composition root.
+      if (path === '/api/verse/fleet/release-lag' || path.startsWith('/api/verse/fleet/release-lag/')) {
+        if (path !== '/api/verse/fleet/release-lag') { sendJson(res, 404, { error: 'Release lag route not found.' }); return true; }
+        if (ctx.releaseLagApi) return ctx.releaseLagApi(verseCtx, req, res, path, method);
+        sendJson(res, 503, { error: 'Release lag is unavailable.' });
+        return true;
+      }
       // Merge-latency report (GET /api/verse/fleet/merge-latency): injected by
       // the composition root and served before the mounted module table, so the
       // frozen mount order and the Tier-1 import closure are both untouched.
