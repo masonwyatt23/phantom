@@ -25,6 +25,26 @@ export interface ClaimNoticeTick {
   maybeRun(signal?: AbortSignal): Promise<ClaimNoticeTickOutcome>;
 }
 
+/** Resolves `null` when `signal` aborts before `settled` resolves. The abort
+ * listener is removed on either settlement, and the promise derived from
+ * `settled` is consumed with a rejection handler, so a late pass failure can
+ * never surface as an unhandled rejection after the caller has left. */
+function raceAbort<T>(settled: Promise<T>, signal: AbortSignal): Promise<T | null> {
+  return new Promise<T | null>((resolve, reject) => {
+    const onAbort = (): void => resolve(null);
+    const done = (): void => signal.removeEventListener('abort', onAbort);
+    signal.addEventListener('abort', onAbort, { once: true });
+    if (signal.aborted) onAbort();
+    const tracked = settled.then(
+      value => { done(); resolve(value); },
+      error => { done(); reject(error); },
+    );
+    // The handlers above never throw and `settled` carries the pass outcome,
+    // but consume any surprise rejection so no derived promise floats.
+    void tracked.catch(() => {});
+  });
+}
+
 export function createClaimNoticeTick(opts: {
   intervalMs?: number;
   now?: () => number;
@@ -52,13 +72,17 @@ export function createClaimNoticeTick(opts: {
         // Defer invocation so synchronous throws also release the guard.
         inFlight = true;
         const running = Promise.resolve().then(pass).finally(() => { inFlight = false; });
-        const result = signal === undefined ? await running : await new Promise<ClaimNoticePassResult | null>((resolve, reject) => {
-          const onAbort = (): void => resolve(null);
-          signal.addEventListener('abort', onAbort, { once: true });
-          if (signal.aborted) onAbort();
-          running.then(resolve, reject).finally(() => signal.removeEventListener('abort', onAbort));
-        });
-        if (result === null) return { ran: false, reason: 'aborted' };
+        // `settled` never rejects: a pass failure becomes an outcome, so a
+        // caller that already aborted cannot leave a derived rejection
+        // unhandled when the pass fails later.
+        const settled = running.then(
+          value => ({ ok: true as const, value }),
+          () => ({ ok: false as const }),
+        );
+        const outcome = signal === undefined ? await settled : await raceAbort(settled, signal);
+        if (outcome === null) return { ran: false, reason: 'aborted' };
+        if (!outcome.ok) return { ran: false, reason: 'pass-error' };
+        const result = outcome.value;
         const counts = { ran: true as const, sent: result.sent, deduped: result.skipped, failed: result.failed };
         // These fixed codes keep arbitrary dependency errors out of the outcome.
         if (result.status === 'board-unavailable') {
