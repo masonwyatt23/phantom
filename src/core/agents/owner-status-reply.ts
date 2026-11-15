@@ -21,6 +21,9 @@ import { isOwnersAsk } from '../fleet/owners-ask.js';
 import { isPeersAsk } from '../fleet/peers-ask.js';
 import { readPeerLedger } from '../agentnet/peer-ledger.js';
 import { formatPeerLedgerReply } from '../fleet/peer-ledger-reply.js';
+import { isIdeationAsk } from '../fleet/ideation-ask.js';
+import { formatIdeationReply, readLatestIdeation } from '../fleet/ideation-reply.js';
+import { fileURLToPath } from 'node:url';
 import { formatSurfaceOwnersReply } from '../fleet/surface-owners-reply.js';
 import { SURFACES, readSurfaceOwner, type SurfaceOwnerReport } from '../fleet/surface-owner.js';
 import { gitSurfaceLog } from '../fleet/surface-owner-git-log.js';
@@ -76,6 +79,9 @@ export interface OwnerStatusDeps {
   /** The surface-ownership answer for a short "owners" ask; the default reads
    * every SURFACES key (ledger + git history) and formats it. */
   owners?: (now: Date) => Promise<string>;
+  /** Repo root scanned for a short "ideation" ask: the newest
+   * docs/strategy/IDEATION-*.md under it answers. Default: the package root. */
+  ideationRepoRoot?: string;
 }
 
 const defaultRecordRecheck = (recheck: FleetRecheck): void => { appendRecheckRecord(ashlrHome(), recheck, homedir()); };
@@ -248,6 +254,9 @@ async function composeSlackStatusReply(runsDir: string, now: Date, deps: OwnerSt
   return `${body}\n${snapshot}`;
 }
 
+/** src/core/agents and dist/core/agents both sit three levels under the package root. */
+const packageRoot = (): string => fileURLToPath(new URL('../../../', import.meta.url));
+
 /** The fixed auto-answer the Slack socket wiring injects into the Leader adapter.
  * Imported only by non-closure modules (cli + tests), so the digest readers stay
  * outside the Tier-1 import closure that slack-leader.ts belongs to. The same
@@ -257,7 +266,7 @@ async function composeSlackStatusReply(runsDir: string, now: Date, deps: OwnerSt
  * every other gated ask with the status digest. */
 export function ownerStatusReply(deps: OwnerStatusDeps = {}): { ask: (text: string) => boolean; compose: (runsDir: string, now: Date, text?: string) => Promise<string>; readonly fallback: string } {
   return {
-    ask: text => isOwnerStatusRequest(text) || isRecheckAsk(text) || isOrdersAsk(text) || isReviewAsk(text) || isOwnersAsk(text) || isPeersAsk(text),
+    ask: text => isOwnerStatusRequest(text) || isRecheckAsk(text) || isOrdersAsk(text) || isReviewAsk(text) || isOwnersAsk(text) || isPeersAsk(text) || isIdeationAsk(text),
     compose: (runsDir, now, text) => text !== undefined && isRecheckAsk(text)
       ? composeOwnerRecheckReply(now, deps)
       : text !== undefined && isOrdersAsk(text)
@@ -269,7 +278,11 @@ export function ownerStatusReply(deps: OwnerStatusDeps = {}): { ask: (text: stri
             : text !== undefined && isPeersAsk(text)
               ? Promise.resolve().then(() => formatPeerLedgerReply(readPeerLedger()))
                 .catch(() => 'Peers unknown: peer ledger reader failed')
-              : composeSlackStatusReply(runsDir, now, deps),
+              : text !== undefined && isIdeationAsk(text)
+                ? Promise.resolve().then(async () => formatIdeationReply(
+                    await readLatestIdeation(deps.ideationRepoRoot ?? packageRoot()), now))
+                  .catch(() => 'Ideation unknown: ideation reader failed')
+                : composeSlackStatusReply(runsDir, now, deps),
     fallback: OWNER_STATUS_FALLBACK,
   };
 }
