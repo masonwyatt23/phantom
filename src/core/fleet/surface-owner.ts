@@ -87,9 +87,25 @@ export interface SurfaceOwnerDeps {
 const label = (value: string | null): string =>
   value !== null && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(value) && scrubSecrets(value) === value ? value : UNKNOWN;
 
+/** Match a complete reference in prose, excluding identifier and path fragments. */
+function namesReference(task: string, reference: string): boolean {
+  let from = 0;
+  while (true) {
+    const index = task.indexOf(reference, from);
+    if (index < 0) return false;
+    const before = index === 0 ? '' : task[index - 1]!;
+    const after = task.slice(index + reference.length);
+    const startsAtBoundary = before === '' || /[\s`'"([{,:;!?]/u.test(before);
+    const endsAtBoundary = after === '' || /^[\s`'"\])},:;!?]/u.test(after)
+      || /^\.(?:$|[\s`'"\])},:;!?])/u.test(after);
+    if (startsAtBoundary && endsAtBoundary) return true;
+    from = index + 1;
+  }
+}
+
 /**
  * One bounded snapshot for a named surface. A claim names a surface when its
- * task contains the surface id or one of its paths as an exact substring.
+ * task contains the surface id or one of its paths as a complete reference.
  * The catalog describes this repository's tree, so only claims on the Hub
  * repository identity (ashlrai/phantom or its pre-rename label, matched
  * case-insensitively like the rest of coordination) can name an owner;
@@ -115,7 +131,7 @@ export async function readSurfaceOwner(surface: string, deps: SurfaceOwnerDeps =
   } else {
     const namesSurface = (claim: FleetBoard['claims'][number]): boolean =>
       typeof claim.task === 'string'
-        && (claim.task.includes(surface) || paths.some(path => claim.task.includes(path)));
+        && (namesReference(claim.task, surface) || paths.some(path => namesReference(claim.task, path)));
     const matches = board.claims.filter(claim => claim.expiresAt > now
       && typeof claim.repo === 'string' && isHubRepositoryLabel(claim.repo) && namesSurface(claim));
     const foreign = board.claims.filter(claim => claim.expiresAt > now
