@@ -1,3 +1,4 @@
+import { observeFleetMerges } from '../intent/observe-fleet-merges.js';
 import { readGoals } from '../fleet/goals.js';
 import { readMetricsPanel } from '../fleet/metrics-panel.js';
 import { applyOrderStatus, OrderStatusError } from './fleet-order-status.js';
@@ -398,11 +399,10 @@ export function createFleetRunsApi(deps: FleetRunsApiDeps = {}): ApiModule {
         });
       }
     }
-    if (result.sources.merges === 'healthy' && result.mergesLastHour.items.length > 0) {
-      try {
-        const mod: typeof import('../intent/merge-snapshot.js') = await import('../intent/merge-snapshot.js' as string);
-        await mod.noteMergeSnapshot(result.mergesLastHour.items, deps.runsDir ?? defaultRunsDir(), new Date(now()).toISOString());
-      } catch { /* Private ledger failures must not affect the snapshot. */ }
+    // Record observed merges once, using the snapshot clock and declared store.
+    // Hermetic instances never touch the host ledger; storage failures are advisory.
+    if (deps.runsDir !== undefined && result.sources.merges === 'healthy') {
+      await observeFleetMerges(result.mergesLastHour.items, { runsDir: deps.runsDir, now: new Date(result.generatedAt) });
     }
     return result;
   }
