@@ -43,24 +43,6 @@ export const REAL_IO_LANE_TIMEOUT_MS = 60_000;
  * lane by default instead of silently rejoining the flaky pile.
  */
 export const REAL_IO_TEST_FILES = [
-  'test/fleet-board-contract-recovery-184.test.ts', // Real authenticated HTTP servers and bounded board-file fixtures.
-  'test/channel-health-ingress-failure-322s.test.ts', // Real child processes exercise channel ingress failures.
-  'test/channel-health-slack-binding-338.test.ts', // Real child processes verify Slack channel bindings.
-  'test/comms-confirm-http-original-264s.test.ts', // Real child processes exercise HTTP confirmation contracts.
-  'test/email-outbox-crash-batch-103.test.ts', // Real child processes exercise outbox crash recovery.
-  'test/fleet-channel-health-proof-320s.test.ts', // Real child processes verify channel-health evidence.
-  'test/gmail-archive-plan-concurrent-104.test.ts', // Real child processes exercise concurrent archive planning.
-  'test/handoff-api-response-contract-10ssl2.test.ts', // Real loopback HTTP response-contract server.
-  'test/imessage-teammate-dispatch.test.ts', // Real child processes exercise teammate dispatch.
-  'test/recut-desk-s0-c205.test.ts', // Real loopback HTTP server fixtures.
-  'test/recut-n1r4200s92.test.ts', // Real subprocess fixtures.
-  'test/recut-top-a59.test.ts', // Real loopback HTTP server fixtures.
-  'test/repo-tracked-artifacts.test.ts', // Real child processes inspect tracked repository artifacts.
-  'test/ui-settings-recut-c196.test.ts', // Real loopback HTTP settings server.
-  'test/ui-settings-recut-c206.test.ts', // Real loopback HTTP settings server.
-  'test/ui-settings.test.ts', // Real loopback HTTP settings server.
-  'test/web-ui-redfix-5262.test.ts', // Real loopback HTTP server fixtures.
-  'test/work-trace-restart-proof-319s.test.ts', // Real child processes exercise restart-proof traces.
   'test/queue.test.ts', // Real Python dispatcher ticks in disposable homes for the shared work market.
   'test/delegation-scope-prompts.test.ts', // real Python and shell prompt builders plus isolated restock fixture subprocesses
   'test/routines.test.ts', // Real CLI adapter subprocesses and private ledger files.
@@ -828,4 +810,5 @@ export const REAL_IO_TEST_FILES = [
   'test/fleet-guardian-head-manifest-01.test.ts', // execFileSync builds real git repo fixtures; the module execFiles real git reads
   'test/recut-n4r2000s79.test.ts', // execFileSync builds a real temp git repo for the recovered guardian-head module
   'test/leader-relay-process-preservation-10srt1.test.ts', // spawnSync runs the real `leader replies sync` CLI child
+  'test/fleet-board-contract-recovery-184.test.ts', // binds a real authenticated HTTP server per case for the /api/fleet/board contract
 ];
