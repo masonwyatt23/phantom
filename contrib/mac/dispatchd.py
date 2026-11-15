@@ -1226,7 +1226,7 @@ def admission_gate():
     if disk_hard_stop: g["reasons"].append("disk_free %gGB < %gGB" % (disk_free_gb, DISK_HARD_STOP_GB))
     g.update(memory_pressure=pressure, pressure_min=GATE_PRESSURE_MIN, swap_gb=swap_gb, swap_growth_gb=growth,
              swap_growth_max_gb=GATE_SWAP_GROWTH_GB, swap_window_s=GATE_SWAP_WINDOW_S, swap_samples=samples,
-             disk_free_gb=disk_free_gb, disk_hard_stop_gb=DISK_HARD_STOP_GB, claim_limit=MAX_LAUNCH_PER_TICK,
+             disk_free_gb=disk_free_gb, disk_hard_stop_gb=DISK_HARD_STOP_GB,
              procs_max=GATE_PROCS_MAX, worktrees_max=GATE_WORKTREES_MAX, tick_max_s=GATE_TICK_MAX_S)
     if wts > GATE_WORKTREES_MAX: g["warnings"].append("worktrees %d > %d" % (wts, GATE_WORKTREES_MAX))
     if age is None: g["warnings"].append("daemon_status_unavailable (%s)" % why)
@@ -1236,6 +1236,79 @@ def admission_gate():
     g["tripped"] = bool(g["reasons"])
     return g
 GATE = admission_gate()
+
+def launch_pace(gate, targets, running, cap, rows, now, paused=False):
+    """Tighten claims before the hard gate, reserving load for launches still warming up.
+
+    Raw session rows only: projected batch members and EMPTY_SIGNAL finishes are
+    not evidence that the host can sustain a higher session launch rate.
+    """
+    def stamp(row):
+        try:
+            value = row.get("ts")
+            return float(value) if type(value) in (int, float) else datetime.datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+        except (ValueError, TypeError, AttributeError, OverflowError): return float("-inf")
+    low = gate["load_max"] * 13 / 18
+    high = gate["load_max"] * 17 / 18
+    cost = max(1, gate["ncpu"] / 9) * min(4, max(1, gate["procs"] / gate["procs_max"], gate["worktrees"] / gate["worktrees_max"]))
+    sessions = {}; useful = set(); empty = set(); last = {}
+    for row in rows:
+        job, event, ts = row.get("job"), row.get("event"), stamp(row)
+        if not isinstance(job, str) or not math.isfinite(ts) or ts > now: continue
+        if event == "launch" and row.get("lane") in targets:
+            last[row.get("lane")] = max(last.get(row.get("lane"), 0), ts)
+        if event not in ("launch", "finish") or not 0 <= now - ts <= 300 or row.get("bundle"): continue
+        attempt = sessions.setdefault(job, {})
+        attempt[event] = max(attempt.get(event, 0), ts)
+        if event == "finish":
+            if row.get("empty") is True or row.get("failure_class") == "EMPTY_SIGNAL": empty.add((job, ts))
+            elif row.get("empty") is False and row.get("exit_code") == 0: useful.add((job, ts))
+    # Load1 lags new workers. Reserve a linearly decaying two-minute startup
+    # cost across ticks, even when a worker is not in the process snapshot yet.
+    warming = sum(max(0, 1 - (now - a["launch"]) / 120) for a in sessions.values()
+                  if "launch" in a and a.get("finish", 0) < a["launch"])
+    effective = gate["load1"] + cost * warming
+    demand = min(max(0, cap - sum(running.values())), sum(max(0, targets[l] - running[l]) for l in targets))
+    reasons = []
+    budget = 0
+    if paused: reasons.append("paused")
+    elif gate["tripped"]: reasons.append("hard_gate")
+    elif not math.isfinite(effective) or effective < 0: reasons.append("signal_unavailable")
+    elif not demand: reasons.append("no_slot_demand")
+    elif effective >= high: reasons.append("band_ceiling")
+    else:
+        headroom = min(math.ceil((high - effective) / cost), max(0, math.floor((gate["load_max"] - effective) / cost)))
+        # Cold starts ramp with distance below the band. Successful throughput
+        # earns at most one extra claim per five useful finishes in five minutes.
+        ramp = 2 + int(max(0, low - effective) / (2 * cost)) + len(useful) // 5
+        budget = min(MAX_LAUNCH_PER_TICK, demand, headroom, ramp)
+        reasons.append("below_band" if effective < low else "target_band")
+        if budget == headroom: reasons.append("headroom_limited")
+        if budget == ramp: reasons.append("ramp_limited")
+    if warming: reasons.append("launch_lag")
+    if useful: reasons.append("finish_credit")
+    if empty: reasons.append("empty_signal")
+    if cost > max(1, gate["ncpu"] / 9): reasons.append("host_inventory_pressure")
+    return {"budget": budget, "reason_codes": reasons, "band_low": low, "band_high": high,
+            "effective_load": effective if math.isfinite(effective) else None, "startup_cost": cost,
+            "warming_sessions": round(warming, 3), "slot_demand": demand,
+            "useful_finishes_5m": len(useful), "empty_finishes_5m": len(empty), "last_launch": last}
+
+def paced_candidates(candidates, specs, running, targets, last_launch):
+    """Interleave equally urgent lanes by slot share; keep priority and lane FIFO.
+
+    The last actual launch breaks equal-share ties across ticks. This ordering
+    grants no lane capacity: the work market still checks every candidate.
+    """
+    groups = {}; ranked = []
+    for index, fields in enumerate(candidates):
+        lane = fields[2]
+        urgency = (*work_market.priority(specs[fields[0]]), _bucket(fields[0]))
+        key = (urgency, lane)
+        ordinal = groups.get(key, 0); groups[key] = ordinal + 1
+        share = (running.get(lane, 0) + ordinal) / max(1, targets.get(lane, 1))
+        ranked.append((urgency, share, last_launch.get(lane, 0), index, fields))
+    return [entry[-1] for entry in sorted(ranked, key=lambda entry: entry[:-1])]
 
 def observe_typed_route(gate, lane_slots, lane_running, ready_lines):
     """One bounded advisory sample per tick. Output has no path into launch state."""
@@ -1616,6 +1689,10 @@ tick_phase("launch", 30)
 # ---- (b) fill
 launched = []; rest = []; bad = 0; batches = []
 GCAP = global_cap()
+PACE = launch_pace(GATE, {l: 0 if slots[l].get("held") or l in hold else tgt(l) for l in LANES},
+                   running, GCAP, JOBS_RAW, time.time(), bool(pause))
+GATE["claim_limit"] = PACE["budget"]
+ev("LAUNCH_PACE " + json.dumps(PACE, sort_keys=True))
 _prev = jload(Q + "/admission.json", {}).get("gate_reason"); _now_reason = "; ".join(GATE["reasons"]) if GATE["tripped"] else None
 if _now_reason and _prev != _now_reason: ev("LOADGATE tripped: " + _now_reason)
 elif not _now_reason and _prev: ev("LOADGATE clear")
@@ -1653,6 +1730,8 @@ if not pause and not disk_hard_stop and not GATE["tripped"]:
     cand.sort(key=lambda f: (*work_market.priority(market_specs[f[0]]), not bool(waste_risk(UIA.get(f[2]), f[2])), _bucket(f[0]),
                              ready_ranks.get(f[1], len(ready_ranks)),
                              *_job_priority(f[0], f[1], f[4], f[4])[1:]))
+    if PACE["budget"] < MAX_LAUNCH_PER_TICK:
+        cand = paced_candidates(cand, market_specs, running, {l: tgt(l) for l in LANES}, PACE["last_launch"])
     seen = set(); pc_n = 0; local_ok = None
     empty_attempts = read_attempts(R); base_identities = {}
     def _local_healthy():   # one GET per tick; any error, timeout or non-200 -> unhealthy. Env proxies ignored.
@@ -2299,12 +2378,14 @@ if not os.path.exists(stamp) or NOW - os.path.getmtime(stamp) > 600:
     spawn(["/bin/bash", R + "/bin/metrics-outcomes.sh"], stdin=subprocess.DEVNULL, stdout=open(MD + "/outcomes.log", "a"),
                      stderr=subprocess.STDOUT, start_new_session=True)
 _at_cap = "at_cap running %d >= cap %d" % (sum(running.values()), GCAP) if sum(running.values()) >= GCAP else None
-_block = [x for x in (_now_reason, "paused" if pause else None, _at_cap) if x]   # same verdict `phm pool admission` computes
+_pace_stop = "launch_pace " + ",".join(PACE["reason_codes"]) if not PACE["budget"] else None
+_block = [x for x in (_now_reason, "paused" if pause else None, _at_cap, _pace_stop) if x]
 adm = {"schema": "dispatchd.admission.v2", "ts": st["last_tick"], "admit": not _block, "gate_reason": _now_reason, "warnings": GATE["warnings"], "reason": "; ".join(_block) or None,
        "disabled": GATE["disabled"], "load1": GATE["load1"], "ncpu": GATE["ncpu"], "load_max": GATE["load_max"], "procs": GATE["procs"], "worktrees": GATE["worktrees"],
        "daemon_tick_age_s": GATE["daemon_tick_age_s"], "local_mid_cap": LOCAL_MID_CAP, "cap": GCAP, "running": sum(running.values()), "hard_cap": slots.get("hard_cap"), "install_lock_holder": _install_holder(),
        "concurrency_cap": CONC["cap"], "concurrency_floor": CONC_FLOOR, "concurrency_ceiling": CONC_CEILING, "concurrency_zones": CONC.get("zones")}
 adm.update({k: v for k, v in GATE.items() if k != "tripped"})
+adm["pacing"] = PACE
 adm["decision"] = "stop" if _block else "admit"
 jsave(Q + "/admission.json", adm); st["admission"] = adm
 observe_typed_route(GATE, slots, running, lines)

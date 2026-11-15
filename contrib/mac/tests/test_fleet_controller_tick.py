@@ -2,7 +2,7 @@
 
 Same harness as test_loadgate.py: a synthetic ~/.ashlr-runs in a temp HOME, one tick of the repo copy as a subprocess, load
 and memory pinned through the LOADGATE_* test variables. Each class isolates one phase:
-  PhaseATick   bus, ledger, single writer lock: nothing about launching changes (shadow, and enforce with phases="a")
+  PhaseATick   bus, ledger, single writer lock: targets unchanged (shadow, and enforce with phases="a"); pacing still binds
   PhaseBTick   graduated shed applied (enforce, phases="b"), fail closed on a missing signal, ramp pause, tighten-only
   PhaseCTick   cross-pool rebalance through the route hysteresis, backpressure advice
 """
@@ -56,18 +56,18 @@ class TickCase(unittest.TestCase):
 class PhaseATick(TickCase):
     JOBS = [(f'RQ-FC-{i}', 'devin', 'work') for i in range(4)]
 
-    def test_default_mode_is_shadow_and_changes_nothing(self):
+    def test_default_mode_is_shadow_and_keeps_targets_while_pacing_launches(self):
         home = self.run_tick(self.JOBS, {'LOADGATE_LOADAVG': '30'})   # 1.67 x ncpu: the shed would be level 2
-        self.assertEqual(len(launched(home)), 4)
+        self.assertEqual(len(launched(home)), 2)
         rec, = ledger(home)
         self.assertEqual((rec['mode'], rec['shed_level']), ('shadow', 0))
         self.assertEqual(rec['shadow']['shed_level'], 2)
         self.assertEqual(rec['shadow']['targets']['devin'], 3)
         self.assertEqual(slots_of(home)['devin']['effective_target'], 6)
 
-    def test_enforce_with_phase_a_only_also_changes_nothing(self):
+    def test_enforce_with_phase_a_only_keeps_targets_while_pacing_launches(self):
         home = self.run_tick(self.JOBS, {'LOADGATE_LOADAVG': '30', 'FLEET_CTL_MODE': 'enforce', 'FLEET_CTL_PHASES': 'a'})
-        self.assertEqual(len(launched(home)), 4)
+        self.assertEqual(len(launched(home)), 2)
         self.assertEqual(ledger(home)[0]['shed_level'], 0)
 
     def test_ledger_line_carries_signals_lanes_objective_and_status_points_at_it(self):
@@ -126,8 +126,13 @@ class PhaseBTick(TickCase):
     ENF = {'FLEET_CTL_MODE': 'enforce', 'FLEET_CTL_PHASES': 'b'}
 
     def test_shed25_cuts_launches_to_the_effective_target(self):
-        home = self.run_tick(self.JOBS, dict(self.ENF, LOADGATE_LOADAVG='30'))   # 30 / 18 = 1.67 -> level 2: devin ceil(6/4)=2 -> floor 3
-        self.assertEqual(len(launched(home)), 3)
+        def busy(home):
+            for i in range(2):
+                (home / '.ashlr-runs' / f'RQ-BUSY-{i}.base').write_text(f'deadbeef x {home}/Projects/ashlrai/wt/RQ-BUSY-{i} devin\n')
+            (home / 'stubbin/ps').write_text('#!/bin/bash\necho "1000 launch.sh RQ-BUSY-0 fixture"\necho "1001 launch.sh RQ-BUSY-1 fixture"\n')
+        home = self.run_tick(self.JOBS, dict(self.ENF, LOADGATE_LOADAVG='30'), prep=busy)  # effective target 3, two already running
+        self.assertEqual(len(launched(home)), 1)
+        self.assertEqual(json.loads((home / '.ashlr-runs/queue/admission.json').read_text())['claim_limit'], 1)
         s = slots_of(home)['devin']
         self.assertEqual((s['target'], s['effective_target'], s['shed_level']), (6, 3, 2))
         rec, = ledger(home)
@@ -146,9 +151,10 @@ class PhaseBTick(TickCase):
         slots = {'devin': devin_slot(target=10, floor=0, ceiling=10, hard_cap=10, last_change=int(1e15))}
         home = self.run_tick([(f'RQ-FC-{i}', 'devin', 'work') for i in range(8)], dict(self.ENF, LOADGATE_LOADAVG='23'), slots=slots)
         self.assertEqual(slots_of(home)['devin']['effective_target'], 5)
-        self.assertEqual(len(launched(home)), 5)   # effective target is stricter than the eight-claim tick limit
+        self.assertEqual(len(launched(home)), 2)   # pacing tightens the effective target of five
         admission = json.loads((home / '.ashlr-runs/queue/admission.json').read_text())
-        self.assertEqual(admission['claim_limit'], 8)
+        self.assertEqual(admission['claim_limit'], 2)
+        self.assertEqual(admission['pacing']['slot_demand'], 5)
 
     def test_missing_memory_signal_fails_closed_to_floors(self):
         home = self.run_tick(self.JOBS, dict(self.ENF, LOADGATE_PRESSURE='unreadable'))   # no pressure level and no free percentage

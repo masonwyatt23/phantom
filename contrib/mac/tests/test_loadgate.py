@@ -2,7 +2,9 @@
 
 Same harness as test_dispatchd.py: each case builds a synthetic ~/.ashlr-runs in a temp HOME and runs one tick of the repo
 copy as a subprocess. Load and ncpu are pinned through LOADGATE_LOADAVG / LOADGATE_NCPU (honored only while the
-LOADGATE_TEST marker exists), `ps` and `ashlr daemon status --json` are stubs. Covers each hard gate (memory pressure, swap growth and disk; load, processes, worktrees and tick age warn), the global running cap, the hard_cap clamps, the ramp pause, and the autopilot overrides reload.
+LOADGATE_TEST marker exists), `ps` and `ashlr daemon status --json` are stubs. Covers hard gates (load, memory pressure,
+swap growth and disk), process/worktree/tick-age warnings, pacing, the global running cap, hard_cap clamps,
+the ramp pause and autopilot overrides reload.
 """
 import json
 import os
@@ -76,10 +78,15 @@ class GateTests(unittest.TestCase):
         self.assertEqual(len(ready_left(home)), 4)
         self.assertIn('LOADGATE tripped: loadavg 64.0 > 36.0', events(home))
 
-    def test_load_at_twice_ncpu_admits_a_full_tick(self):
+    def test_pacing_stops_before_the_hard_load_gate(self):
         home = self._case({'LOADGATE_LOADAVG': '36'}, n=4)
-        self.assertEqual(len(launched(home)), 4)
-        self.assertEqual(admission(home)['decision'], 'admit')
+        self.assertEqual(launched(home), [])
+        self.assertEqual(len(ready_left(home)), 4)
+        a = admission(home)
+        self.assertIsNone(a['gate_reason'])  # the binary >36 backstop has not tripped
+        self.assertEqual(a['decision'], 'stop')
+        self.assertEqual(a['claim_limit'], 0)
+        self.assertIn('band_ceiling', a['pacing']['reason_codes'])
 
     def test_rising_memory_pressure_blocks(self):
         # kern.memorystatus_vm_pressure_level: 1 normal, 2 warn, 4 critical. Warn is already a rise.
@@ -91,12 +98,17 @@ class GateTests(unittest.TestCase):
     def test_swap_growth_window_and_boundary(self):
         import time
         def prep(home, age):
+            now = time.time()
+            # Freeze only the synthetic subprocess clock: scheduler delay on a
+            # busy host must not age an in-window sample out of this fixture.
+            (home / 'stubbin/sitecustomize.py').write_text(f'import time\ntime.time = lambda: {now!r}\n')
             (home / '.ashlr-runs' / 'queue' / 'admission.json').write_text(
-                json.dumps({'swap_samples': [[time.time() - age, 1]]}))
-        for used, age, expected in [('3.1', 299, 0), ('3', 299, 1), ('9', 301, 1)]:
+                json.dumps({'swap_samples': [[now - age, 1]]}))
+        for used, age, expected in [('3.1', 299, 0), ('3.1', 300, 0), ('3', 299, 1), ('3', 300, 1), ('9', 301, 1)]:
             home = self._case({'LOADGATE_SWAP_GB': used}, prep=lambda h: prep(h, age))
             self.assertEqual(len(launched(home)), expected)
             self.assertEqual(admission(home)['admit'], bool(expected))
+            self.assertEqual(len(admission(home)['swap_samples']), 1 if age > 300 else 2)
 
     def test_more_than_2500_processes_warns(self):
         for count in (2500, 2501):

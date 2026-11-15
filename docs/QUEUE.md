@@ -364,6 +364,53 @@ off before they run out. The report shows it as `adaptiveCap`. An operator
 change batches related ready tasks into one agent session. See
 [adaptive concurrency and batching](../contrib/mac/README.md#adaptive-concurrency-and-batching).
 
+### Adaptive launch pacing
+
+The source dispatcher also budgets new sessions per tick (`RQ-LOAD-PACING-1`).
+Concurrency caps bound running sessions; pacing limits how quickly free slots
+fill. The hard load, memory pressure, swap growth and disk gates still stop
+claims. Pacing cannot raise a target, waive a hold or bypass market eligibility.
+This source change requires Security review and re-pinning before live installation.
+
+The target load band scales with the configured hard load ceiling: 13/18 through
+17/18 of that ceiling, or **26–34** with 18 CPUs and the default ceiling of 36.
+Each new session reserves `max(1, ncpu / 9)` load units. Process or live-worktree
+counts above their warning thresholds increase that estimate, up to fourfold;
+these inventory counts remain warnings rather than new hard stops.
+
+The per-tick budget is the minimum of eight, available global and lane slots,
+headroom to the band ceiling divided by estimated session cost (rounded up,
+but never beyond estimated headroom to the hard ceiling),
+and a gradual ramp. The ramp starts at two, adds one for every two session costs
+below the lower band, and adds one for every five successful nonempty session
+finishes in the past five minutes. Empty/`EMPTY_SIGNAL`, failed, unknown and
+bundled member finishes earn no acceleration. Raw session metrics avoid counting
+one batch as many concurrent workers. With no finish history and normal inventory,
+loads 14, 26, 30, 32 and 34 yield budgets 5, 2, 2, 1 and 0 before slot limits.
+
+Load1 lags startup. Unfinished launches reserve their estimated startup cost,
+decaying linearly over 120 seconds, across ticks; this prevents repeated low
+samples from granting a fresh full batch. Finishes release their reservation.
+At or above the upper band, claims wait for headroom. Below it, fractional
+headroom permits one session if the estimated hard headroom covers it, with
+the reservation preventing repeated probes.
+These are conservative estimates, not a guarantee of future CPU load.
+
+When pacing binds, equally urgent candidates interleave by lane slot share,
+breaking ties by the least recently launched lane. Existing priority and job
+buckets stay ahead of fairness; within a lane, the existing ordering remains.
+Blocked candidates remain queued and scanning continues to runnable work.
+The market still decides the actual executor and enforces its capacity and
+route residency constraints.
+
+Every tick emits `LAUNCH_PACE` with a JSON decision in `dispatch-events.log`.
+Reason codes include `below_band`, `target_band`, `headroom_limited`,
+`ramp_limited`, `band_ceiling`, `launch_lag`, `finish_credit`, `empty_signal`,
+`host_inventory_pressure`, `no_slot_demand`, `hard_gate`, `paused` and
+`signal_unavailable`. `queue/admission.json` and the status admission projection
+include `pacing` and the effective `claim_limit`; a zero pacing budget reports
+`launch_pace` in the stop reason. Diagnostics are read-only.
+
 `ashlr fleet admission [--json]` reads that stored verdict from `queue/status.json`
 and says why each lane is waiting: held, at target, blocked by the global cap, or ok.
 It does not probe the host or launch work. It exits 1 when any lane is blocked by

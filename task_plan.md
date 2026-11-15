@@ -53,3 +53,15 @@ no credential values in reports or receipts; no implicit enrollment or spending.
 
 Errors: initial exploratory searches included missing paths and overly broad output;
 subsequent reads use exact paths. No source changes made during discovery.
+
+# RQ-LOAD-PACING-1
+
+- [x] Phantom preflight and dispatcher inspection.
+- [x] Implement launch pacing and fairness.
+- [x] Add hermetic regression tests and documentation.
+- [x] Run verification and write BRIDGE_NOTES.md; leave changes uncommitted.
+
+Status: source-only implementation. Global npm prefix failed EPERM; temporary prefix succeeded.
+Wire status and MCP doctor report unavailable/protected companion configuration; no auth/config repair.
+
+RQ-LOAD-PACING-1 complete: 217 distinct selected tests passed; typecheck, docs and verify-changed passed. Full lint reports 3 baseline errors in two untouched tests. Source only; Security re-pin required before live installation.
