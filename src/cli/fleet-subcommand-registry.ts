@@ -416,6 +416,7 @@ export const FLEET_SUBCOMMAND_LOADERS: Record<string, () => Promise<Record<strin
   'tailnet-peers': () => import('./fleet-tailnet-peers.js'),
   'task-check': () => import('./fleet-task-check.js'),
   'teammate-latency': () => import('./fleet-teammate-latency.js'),
+  'teammate-tasks': () => import('./fleet-teammate-tasks.js'),
   'teammate-texts': () => import('./fleet-teammate-texts.js'),
   'teammates': () => import('./fleet-teammates.js'),
   'telegram-pulse': () => import('./fleet-telegram-pulse.js'),
@@ -448,6 +449,7 @@ export const FLEET_SUBCOMMAND_LOADERS: Record<string, () => Promise<Record<strin
   'write-budget': () => import('./fleet-write-budget.js'),
   'wt-audit': () => import('./fleet-wt-audit.js'),
   'wt-cache': () => import('./fleet-wt-cache.js'),
+  'wt-census': () => import('./fleet-wt-census.js'),
   'wt-deps': () => import('./fleet-wt-deps.js'),
   'wt-reap': () => import('./fleet-wt-reap.js'),
 };
