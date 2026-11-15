@@ -42,6 +42,7 @@
 import { spawnSync } from 'node:child_process';
 import { once } from 'node:events';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { formatFleetMetrics } from '../core/fleet/metrics-feed.js';
 import { homedir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 import type { AshlrConfig } from '../core/types.js';
@@ -119,6 +120,7 @@ export function formatFleetStatus(s: FleetStatus): string {
     lines.push(`  free: ${memory.freeMemoryPercent === null ? 'unknown' : `${memory.freeMemoryPercent}%`}; swap used: ${memory.swapUsedBytes === null ? 'unknown' : `${memory.swapUsedBytes} bytes`}`);
     lines.push(`  admission waits: ${memory.admissionWaitsByPool === null ? 'unknown' : JSON.stringify(memory.admissionWaitsByPool)}`);
   }
+  if (s.metrics) lines.push(...formatFleetMetrics(s.metrics));
   if (s.buildIdentity) {
     const version = s.buildIdentity.packageVersion ?? 'unknown';
     const revision = s.buildIdentity.revision?.slice(0, 12) ?? 'unknown';
