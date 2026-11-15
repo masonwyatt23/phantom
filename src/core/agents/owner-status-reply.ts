@@ -19,6 +19,9 @@ import { readReviewPick } from '../fleet/review-pick.js';
 import { formatReviewPickReply } from '../fleet/review-pick-reply.js';
 import { isOwnersAsk } from '../fleet/owners-ask.js';
 import { formatSurfaceOwnersReply } from '../fleet/surface-owners-reply.js';
+import { isRunningAsk } from '../fleet/running-ask.js';
+import { readClaimExecution } from '../fleet/claim-execution-evidence.js';
+import { formatClaimExecutionReply } from '../fleet/claim-execution-reply.js';
 import { SURFACES, readSurfaceOwner, type SurfaceOwnerReport } from '../fleet/surface-owner.js';
 import { gitSurfaceLog } from '../fleet/surface-owner-git-log.js';
 import { listLiveWorkers, type LiveWorkersSnapshot } from '../fleet/runs-live-workers.js';
@@ -36,6 +39,7 @@ export const OWNER_RECHECK_FALLBACK = "Phantom recheck: the recheck read failed;
 export const OWNER_ORDERS_FALLBACK = "Phantom orders: the orders read failed; your message is in the Leader's inbox.";
 export const OWNER_REVIEW_FALLBACK = "Phantom review pick: the read failed; your message is in the Leader's inbox.";
 export const OWNER_OWNERS_FALLBACK = "Phantom owners: the ownership read failed; your message is in the Leader's inbox.";
+export const OWNER_RUNNING_FALLBACK = "Phantom running: the claim execution read failed; your message is in the Leader's inbox.";
 
 /** Exact short asks only; "status of the release pr #12" is a request for the Leader. */
 export function isOwnerStatusRequest(text: string): boolean {
@@ -73,6 +77,9 @@ export interface OwnerStatusDeps {
   /** The surface-ownership answer for a short "owners" ask; the default reads
    * every SURFACES key (ledger + git history) and formats it. */
   owners?: (now: Date) => Promise<string>;
+  /** The claim-execution answer for a short "running" ask; the default reads
+   * one claim-execution snapshot (ledger + live worker table) and formats it. */
+  running?: (now: Date) => Promise<string>;
 }
 
 const defaultRecordRecheck = (recheck: FleetRecheck): void => { appendRecheckRecord(ashlrHome(), recheck, homedir()); };
@@ -195,6 +202,26 @@ export async function composeOwnerOwnersReply(now: Date, deps: OwnerStatusDeps =
   } catch { return OWNER_OWNERS_FALLBACK; }
 }
 
+/** Reader seam for the default running answer. */
+export interface DefaultRunningReaders {
+  read?: typeof readClaimExecution;
+}
+
+/** The default running answer: one claim-execution snapshot joining live
+ * advisory claims with the worker process table, formatted by
+ * claim-execution-reply.ts. Evidence only — it assigns nothing. */
+export async function defaultRunningReply(now: Date, readers: DefaultRunningReaders = {}): Promise<string> {
+  return formatClaimExecutionReply(await (readers.read ?? readClaimExecution)({ now: () => now.getTime() }));
+}
+
+/** Never throws and never falls through to another branch: a running ask gets
+ * the claim-execution evidence or the fixed running fallback. Assigns nothing. */
+export async function composeOwnerRunningReply(now: Date, deps: OwnerStatusDeps = {}): Promise<string> {
+  try {
+    return await (deps.running ?? defaultRunningReply)(now);
+  } catch { return OWNER_RUNNING_FALLBACK; }
+}
+
 const defaultBoard = (now: Date): WorkBoardResult => listWorkBoard({ root: join(ashlrHome(), 'fleet'), now: now.getTime(), limit: 20 });
 
 /** A failed board read never touches the digest: it only becomes the "unknown" line. */
@@ -248,13 +275,15 @@ async function composeSlackStatusReply(runsDir: string, now: Date, deps: OwnerSt
 /** The fixed auto-answer the Slack socket wiring injects into the Leader adapter.
  * Imported only by non-closure modules (cli + tests), so the digest readers stay
  * outside the Tier-1 import closure that slack-leader.ts belongs to. The same
- * holds for the fleet recheck, orders and review readers: an exact "recheck"
- * ask is answered with the recheck verdict, an exact "orders" ask with the
- * per-order reply, an exact "review" ask with the unowned review pick, and
- * every other gated ask with the status digest. */
+ * holds for the fleet recheck, orders, review, owners and running readers: an
+ * exact "recheck" ask is answered with the recheck verdict, an exact "orders"
+ * ask with the per-order reply, an exact "review" ask with the unowned review
+ * pick, an exact "owners" ask with the surface-ownership reply, an exact
+ * "running" ask with the claim-execution evidence, and every other gated ask
+ * with the status digest. */
 export function ownerStatusReply(deps: OwnerStatusDeps = {}): { ask: (text: string) => boolean; compose: (runsDir: string, now: Date, text?: string) => Promise<string>; readonly fallback: string } {
   return {
-    ask: text => isOwnerStatusRequest(text) || isRecheckAsk(text) || isOrdersAsk(text) || isReviewAsk(text) || isOwnersAsk(text),
+    ask: text => isOwnerStatusRequest(text) || isRecheckAsk(text) || isOrdersAsk(text) || isReviewAsk(text) || isOwnersAsk(text) || isRunningAsk(text),
     compose: (runsDir, now, text) => text !== undefined && isRecheckAsk(text)
       ? composeOwnerRecheckReply(now, deps)
       : text !== undefined && isOrdersAsk(text)
@@ -263,7 +292,9 @@ export function ownerStatusReply(deps: OwnerStatusDeps = {}): { ask: (text: stri
           ? composeOwnerReviewReply(now, deps)
           : text !== undefined && isOwnersAsk(text)
             ? composeOwnerOwnersReply(now, deps)
-            : composeSlackStatusReply(runsDir, now, deps),
+            : text !== undefined && isRunningAsk(text)
+              ? composeOwnerRunningReply(now, deps)
+              : composeSlackStatusReply(runsDir, now, deps),
     fallback: OWNER_STATUS_FALLBACK,
   };
 }
