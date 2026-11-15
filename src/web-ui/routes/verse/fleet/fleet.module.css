@@ -377,9 +377,15 @@
   line-height: var(--text-xs-line-relaxed);
 }
 
-.stage[data-stage='merge'] {
+.stage[data-stage='merge'],
+.stage[data-stage='verified'] {
   background: var(--status-success-bg);
   color: var(--status-success-fg);
+}
+
+.stage[data-stage='blocked'] {
+  background: var(--status-danger-bg);
+  color: var(--status-danger-fg);
 }
 
 .stage[data-stage='none'] {

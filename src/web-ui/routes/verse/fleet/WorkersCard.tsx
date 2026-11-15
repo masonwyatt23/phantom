@@ -12,6 +12,7 @@ import { usePollWhileVisible } from '../shell/section-visibility.js';
 import { ageText, describeWorkers, emptyReason, narrowWorkers, publishFor, sortWorkers } from './workers-card-model.js';
 import { isFleetRuns } from '../ops/ops-runs-model.js';
 import { claimedRows, claimedTell } from './claimed-rows.js';
+import { toReturnedRows } from './returned-rows.js';
 import { laneShort } from './lane-label.js';
 import { notInBuild, workersQuery } from './workers-card-queries.js';
 import { JobDetailSheet } from './JobDetailSheet.js';
@@ -23,6 +24,7 @@ import { ackLabel, guidanceForJob } from './session-guidance-model.js';
 import { strategyForLane } from '../../../../core/fleet/session-guidance.js';
 import { SessionGuidanceBox } from './SessionGuidanceBox.js';
 import styles from './workers-card.module.css';
+import fleetStyles from './fleet.module.css';
 
 let missingWorkers: ApiError | undefined;
 const cardQuery = {
@@ -57,6 +59,7 @@ export function WorkersCard() {
   const now = Date.now();
   const rows = healthy && data.runs ? claimedRows(data.runs, now) : [];
   const tell = healthy && data.runs ? claimedTell(rows, data.runs, now) : null;
+  const returned = data?.runs ? toReturnedRows(data.runs.returns, now) : [];
   const stuckCount = healthy ? data.workers.filter(worker => workerAgeState(worker.lane, worker.ageSeconds) === 'stuck').length : 0;
   return <section className={styles.panel} aria-labelledby={id}>
     <header className={styles.header}><h2 id={id}>Working on this Mac</h2>
@@ -70,6 +73,10 @@ export function WorkersCard() {
       <li key={`${row.job}-${row.lane}`}><span>{row.job}</span> <Tag title={row.lane}>{row.lane}</Tag> <span aria-label={`Tier ${row.tier}`}>{row.tier}</span> <span aria-label={`Age ${Math.floor(row.ageSeconds)} seconds`}>{row.ageText}</span></li>
     )}</ul></div> : null}
     {tell ? <p role="status" className={tell.tone === 'bad' ? styles.rowStuck : styles.rowLong}>{tell.text}</p> : null}
+    {data?.runs?.returns === null ? <p className={fleetStyles.muted}>Returns unknown: {data.runs.returnsReason ?? 'coordination ledger unreadable'}</p> : null}
+    {returned.length ? <div><h3>Returned</h3><ul aria-label="Returned claims">{returned.map(row =>
+      <li key={`${row.claimId}-${row.at}`}><span className={fleetStyles.stage} data-stage={row.state === 'VERIFIED' ? 'verified' : row.state === 'BLOCKED' ? 'blocked' : undefined}>{row.state}</span> <span>{row.who}</span> <span>{row.target}</span> <span>{row.evidence}</span> <span aria-label={`Age ${Math.floor(row.ageSeconds)} seconds`}>{row.age}</span></li>
+    )}</ul></div> : null}
     {read.status === 'loading' ? <SkeletonLine /> : !healthy ? <EmptyState compact title="Worker list unavailable" body={notInBuild(read.error) ? 'The worker API is not in this build yet.' : undefined} />
       : !data.workers.length ? <p data-tone={emptyReason(data).tone}>{emptyReason(data).text}</p>
       : <div className={styles.scroll}><table><thead><tr>{['Job', 'Repo', 'Lane', 'Tier', 'Age', 'PR', 'Guide'].map(label => <th scope="col" key={label}>{label}</th>)}</tr></thead>

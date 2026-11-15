@@ -99,6 +99,27 @@
         }
       }
     },
+    "returns": {
+      "type": ["array", "null"],
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["claimId", "repo", "result", "evidenceKind", "pr", "head", "evidence", "from", "at", "expiresAt"],
+        "properties": {
+          "claimId": {"type": "string"},
+          "repo": {"type": "string"},
+          "result": {"type": "string", "enum": ["VERIFIED", "BLOCKED"]},
+          "evidenceKind": {"type": "string", "enum": ["pr", "tests", "artifact", "dependency"]},
+          "pr": {"type": ["number", "null"]},
+          "head": {"type": ["string", "null"]},
+          "evidence": {"type": "string"},
+          "from": {"type": "string"},
+          "at": {"type": "string"},
+          "expiresAt": {"type": "string"}
+        }
+      }
+    },
+    "returnsReason": {"type": ["string", "null"]},
     "leaders": {
       "type": "array",
       "items": {

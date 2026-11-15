@@ -28,6 +28,8 @@ import { STRAY_ID_PATTERN } from '../fleet/stray-slots.js';
 import { laneMedians, overrunOf } from '../fleet/job-overrun.js';
 import type { reassignQueuedJobs } from '../fleet/runs-reassign.js';
 import { isJobCommand, renderJobCommandReply, runTelegramJobCommand } from '../comms/telegram-job-command.js';
+import { projectCoordinationReturns } from '../fleet/coordination-returns-view.js';
+import type { FleetBoard } from '../fleet/coordination.js';
 
 export const VERSE_FLEET_RUNS_REASSIGN_PATH = '/api/verse/fleet/runs/reassign';
 import {
@@ -129,6 +131,9 @@ export interface FleetRunsApiDeps {
   readMission?: () => Promise<MissionControlV1>;
   /** Owner-thread mirror roots (tests); default is the fixed owner dirs. */
   ownerThread?: import('./owner-thread-api.js').OwnerThreadApiDeps;
+  /** Advisory coordination board for the returns projection. Default: the
+   * canonical ledger reader, lazy-imported like the other fleet readers. */
+  readBoard?: () => FleetBoard | null | Promise<FleetBoard | null>;
 }
 
 /** ASHLR_RUNS_DIR overrides ~/.ashlr-runs — the fleet runs-dir convention. */
@@ -228,6 +233,10 @@ export function createFleetRunsApi(deps: FleetRunsApiDeps = {}): ApiModule {
   const inbox = deps.readInbox ?? (async (limit: number) => (await import('../fleet/mason-inbox.js' as string)).readInboxEntries({ limit, runsDir: deps.runsDir ?? defaultRunsDir() }));
   const outbox = deps.readOutbox ?? (async (limit: number) => (await import('../fleet/mason-outbox.js' as string)).readOutboxEntries({ limit, runsDir: deps.runsDir ?? defaultRunsDir() }));
   const append = deps.appendInbox ?? (async (text: string, source: string) => (await import('../fleet/mason-inbox.js' as string)).appendInboxEntry(text, { source, runsDir: deps.runsDir ?? defaultRunsDir() }));
+  const readBoard = deps.readBoard ?? (async () => {
+    try { return (await import('../fleet/coordination.js' as string)).readFleetBoard({ now: now() }); }
+    catch { return null; }
+  });
   // One receiver per API instance: its normalization/dedupe contract is shared
   // by every POST below for the process lifetime. `source` stays presentation
   // metadata — never identity — so it rides to the sink out of band: the
@@ -386,6 +395,16 @@ export function createFleetRunsApi(deps: FleetRunsApiDeps = {}): ApiModule {
       result.outbox = project(entries, outboxShape) as FleetRunsV1['outbox'];
     } catch { result.outbox = []; }
     await sourcesDone;
+    // Posted claim outcomes, advisory like claims. An unreadable ledger sends
+    // returns: null with a reason, never an empty list that reads as "none".
+    try {
+      const projected = projectCoordinationReturns(await readBoard(), now());
+      result.returns = projected.state === 'known' ? projected.returns.slice(0, 20) : null;
+      result.returnsReason = projected.state === 'known' ? null : projected.reason;
+    } catch {
+      result.returns = null;
+      result.returnsReason = 'coordination ledger: reader failed';
+    }
     // Overrun flags are additive evidence on projected workers: the ledger can
     // only add `overrun`, never rewrite a projected field or the ordering.
     if (result.workers.length > 0) {

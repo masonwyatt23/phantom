@@ -17,6 +17,12 @@ const source: Check<'healthy' | 'degraded' | 'missing' | 'not-landed'> = (v): v 
   v === 'healthy' || v === 'degraded' || v === 'missing' || v === 'not-landed';
 const mergeItem: Check<{ repo: string; number: number; title: string; mergedAt?: string | null; openedAt?: string | null }> =
   shape({ repo: str, number: num, title: str, mergedAt: optional(s), openedAt: optional(s) });
+const fleetReturnRow = shape({
+  claimId: str, repo: str, result: str, evidenceKind: str, pr: nullable(num), head: s,
+  evidence: str, from: str, at: str, expiresAt: str,
+});
+/** Wire row for one posted claim outcome; already scrubbed server-side. */
+export type FleetRunsReturn = typeof fleetReturnRow extends Check<infer T> ? T : never;
 const fleetRunsShape = shape({
   v: ((v): v is 1 => v === 1), generatedAt: str,
   sources: shape({ runsDir: source, workers: source, inbox: source, codex: source, merges: source }),
@@ -24,6 +30,7 @@ const fleetRunsShape = shape({
   lanes: array(shape({ lane: str, running: num, target: num, queued: num, held: bool, heldReason: s, tokensLastHour: n, merged24h: n, mergeRate24h: n })),
   workers: array(shape({ job: str, repo: str, lane: str, tier: str, ageSeconds: n })),
   claimed: optional(array(shape({ job: str, lane: str, tier: str, at: str }))),
+  returns: optional(nullable(array(fleetReturnRow))), returnsReason: optional(s),
   leaders: array(shape({ label: str, ageSeconds: n })), orchestratorAgents: n,
   publishesLastHour: array(shape({ job: str, lane: s, url: s, at: str })),
   mergesLastHour: shape({ count: n, items: array(mergeItem) }),
@@ -35,7 +42,9 @@ const fleetRunsShape = shape({
 const hostShape = nullable(shape({ load1: n, load5: n, load15: n, cores: n, ratio: n }));
 type Host = typeof hostShape extends Check<infer T> ? T : never;
 type BaseFleetRuns = typeof fleetRunsShape extends Check<infer T> ? T : never;
-export type FleetRuns = Omit<BaseFleetRuns, 'claimed'> & { claimed?: BaseFleetRuns['claimed']; host?: Host };
+export type FleetRuns = Omit<BaseFleetRuns, 'claimed' | 'returns' | 'returnsReason'> & {
+  claimed?: BaseFleetRuns['claimed']; returns?: FleetRunsReturn[] | null; returnsReason?: string | null; host?: Host;
+};
 export const isFleetRuns: Check<FleetRuns> = (v): v is FleetRuns =>
   fleetRunsShape(v) && (!('host' in v) || hostShape(v.host));
 export const countText = (n: number | null): string => n === null ? '—' : String(n);
