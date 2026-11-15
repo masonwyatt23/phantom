@@ -13,6 +13,7 @@ import { StandbyCard } from './StandbyCard.js';
 import { RuntimeIdentityCard } from './RuntimeIdentityCard.js';
 import { TailnetPeersCard } from './TailnetPeersCard.js';
 import { PoolReachCard } from './PoolReachCard.js';
+import { BridgeCheckCard } from './BridgeCheckCard.js';
 import { ClaimExecutionCard } from './ClaimExecutionCard.js';
 import { SurfaceOwnerCard } from './SurfaceOwnerCard.js';
 import { AppsCard } from './AppsCard.js';
@@ -65,6 +66,7 @@ export function FleetHostPane({ visible }: Pick<PaneProps, 'visible'>) {
       <p className={styles.headline}>Fleet Mac health</p>
       <button type="button" className={styles.refresh} onClick={refresh}>Refresh</button>
     </header>
+    <BridgeCheckCard visible={visible} />
     <AllowedAppsCard visible={visible} />
     {data === null ? <p className={styles.muted}>The fleet runs API has not landed in this build yet.</p>
       : !data ? <p className={styles.muted} role="status">{read.status === 'error' ? 'Fleet runs are unavailable.' : 'Reading fleet runs…'}</p>
