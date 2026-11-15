@@ -996,6 +996,7 @@
 /test/merge-backlog-read.test.ts @masonwyatt23
 /test/merge-cockpit-exact-206s.test.ts @masonwyatt23
 /test/merge-cockpit-owner-qualification-302s.test.ts @masonwyatt23
+/test/merge-cockpit.test.ts @masonwyatt23
 /test/merge-gate-latency.test.ts @masonwyatt23
 /test/merge-gates-310b.test.ts @masonwyatt23
 /test/merge-graph-original-246s.test.ts @masonwyatt23
