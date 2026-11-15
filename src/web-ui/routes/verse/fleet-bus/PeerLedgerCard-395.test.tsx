@@ -33,7 +33,7 @@ it('shows a pair at limit and a near-cap origin', async () => {
   expect(screen.getByText('hop 7/8')).toBeTruthy();
   expect(screen.queryByText('calm')).toBeNull();
   expect(screen.getByText('Peer bus: 12 of 1024 rows · 1 pair at limit · 1 thread near hop cap')).toBeTruthy();
-  expect(fetch).toHaveBeenCalledWith('/api/verse/fleet/runtime-identity/peer-ledger', expect.any(Object));
+  expect(fetch).toHaveBeenCalledWith('/api/verse/fleet/peer-ledger', expect.any(Object));
 });
 it('404 shows not-in-build', async () => {
   vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status: 404 })));
