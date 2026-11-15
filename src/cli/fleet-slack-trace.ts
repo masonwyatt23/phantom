@@ -5,8 +5,10 @@ const usage = 'Usage: ashlr fleet slack-trace [--thread <ts>] [--json]';
 
 /**
  * Read-only per-request trace: ingress receipt to same-thread reply outcome.
- * Exit 0 requires both sources ok and at least one request, all answered;
- * ids and timestamps only, never text, author ids or paths.
+ * Exit 0 requires both sources ok, at least one request, every row answered
+ * by a same-thread `sent` receipt AND confirmed bus ingress (`posted` or
+ * `duplicate`); `unknown` ingress is a reply receipt, not proof of bus
+ * ingestion. Ids and timestamps only, never text, author ids or paths.
  */
 export async function cmdFleetSlackTrace(args: string[], deps: SlackRequestTraceOptions = {}): Promise<number> {
   if (args.includes('--help') || args.includes('-h')) {
@@ -43,5 +45,7 @@ export async function cmdFleetSlackTrace(args: string[], deps: SlackRequestTrace
     }
   }
   const clean = trace.sources.journal === 'ok' && trace.sources.sends === 'ok';
-  return clean && trace.rows.length > 0 && trace.rows.every((row) => row.outcome === 'answered') ? 0 : 1;
+  const verified = clean && trace.rows.length > 0 && trace.rows.every((row) =>
+    row.outcome === 'answered' && (row.ingress === 'posted' || row.ingress === 'duplicate'));
+  return verified ? 0 : 1;
 }
