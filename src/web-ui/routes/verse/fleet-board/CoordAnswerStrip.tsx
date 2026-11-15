@@ -6,6 +6,9 @@
  * (runtime-identity, comms-status channel health, work board) plus the advisory claims ledger so the shared
  * cache still serves one request each; polls at 15 s while visible. Read-only.
  */
+import { apiGet, ApiError } from '../../../data/client.js';
+import type { QueryDef } from '../../../data/queries.js';
+import { CoordClaimsSegment, type CoordClaimsPayload } from '../coord-claims-segment.js';
 import { useQuery, useRefetch } from '../../../data/hooks.js';
 import { usePollWhileVisible } from '../shell/section-visibility.js';
 import { channelHealthQuery } from '../fleet-channels/channel-health-query.js';
@@ -13,10 +16,22 @@ import { narrowChannelHealth, type ChannelHealthView } from '../fleet-channels/c
 import { runtimeIdentityQuery } from '../fleet-host/runtime-identity-query.js';
 import type { RuntimeIdentityView } from '../fleet-host/runtime-identity-model.js';
 import { deriveCoordAnswer, type CoordBoardView } from './coord-answer-model.js';
-import { coordinationClaimsQuery, type CoordLedgerView } from './coordination-claims-query.js';
+import { narrowCoordLedger, type CoordLedgerView } from './coordination-claims-query.js';
 import { deriveRecheckLine, recheckVerdictQuery } from './recheck-verdict-query.js';
 import { workBoardQuery } from './work-board-section.js';
 import styles from './fleet-board.module.css';
+
+// Preserve lease timestamps for the chips while sharing the existing query key.
+const coordinationClaimsQuery: QueryDef<CoordClaimsPayload | null> = {
+  key: 'verse-fleet-coordination-claims',
+  async fetch(signal) {
+    try { return await apiGet<CoordClaimsPayload>('/api/verse/fleet/coordination-claims', signal); }
+    catch (error) {
+      if (error instanceof ApiError && error.status === 404) return null;
+      throw error;
+    }
+  },
+};
 
 export function CoordAnswerStrip({ visible }: { visible: boolean }) {
   const runtime = useQuery(runtimeIdentityQuery, { enabled: visible, freshMs: 0 });
@@ -44,7 +59,8 @@ export function CoordAnswerStrip({ visible }: { visible: boolean }) {
   // A failed (non-404) ledger read is shown as unreadable, not as loading.
   const ledgerView: CoordLedgerView | null | undefined =
     ledger.data === undefined && ledger.status === 'error'
-      ? { state: 'unknown', generatedAt: null, claims: [], expiredClaims: null } : ledger.data;
+      ? { state: 'unknown', generatedAt: null, claims: [], expiredClaims: null }
+      : ledger.data == null ? ledger.data : narrowCoordLedger(ledger.data);
 
   const answer = deriveCoordAnswer({ runtime: runtimeView, channels: channelsView, board: boardView, ledger: ledgerView, now: Date.now() });
 
@@ -58,6 +74,13 @@ export function CoordAnswerStrip({ visible }: { visible: boolean }) {
         <h3 id="fb-coord-answer" className={styles.sectionTitle}>Coordination answer</h3>
         <span className={styles.coordVerdict} data-verdict={answer.verdict}>{answer.verdict}</span>
       </div>
+      <CoordClaimsSegment
+        payload={ledger.status === 'error'
+          ? { state: 'unknown', reason: ledger.error?.message ?? 'Claims fetch failed' }
+          : ledger.data}
+        lastVerified={board.status === 'error' ? null : answer.lastVerified}
+        now={Date.now()}
+      />
       <dl className={styles.coordRows}>
         {answer.rows.map((row) => (
           <div key={row.label}>
