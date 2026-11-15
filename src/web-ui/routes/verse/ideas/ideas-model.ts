@@ -8,6 +8,7 @@ import { repoDisplayName } from '../autonomy/format.js';
 
 export interface IdeaRow {
   key: string;
+  /** The backlog id the server drafts from; null when the item has none. */
   id: string | null;
   title: string;
   repo: string;
