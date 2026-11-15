@@ -11,6 +11,8 @@ import { readFleetRecheck, type FleetRecheck } from '../fleet/fleet-recheck.js';
 import { appendRecheckRecord } from '../fleet/recheck-record.js';
 import { homedir } from 'node:os';
 import { formatRecheckReply } from '../fleet/fleet-recheck-reply.js';
+import { readFleetBoard } from '../fleet/coordination.js';
+import { buildRecheckClaimsLine } from '../fleet/recheck-claims-line.js';
 import { isOrdersAsk } from '../fleet/orders-ask.js';
 import { formatOrdersReply } from '../fleet/orders-reply.js';
 import { readOrderTrace } from '../fleet/order-trace.js';
@@ -55,6 +57,8 @@ export interface OwnerStatusDeps {
   /** Retains one sanitized row per default recheck answer. Only the default
    * recheck path calls it; a supplied `recheck` bypasses it. A throw is ignored. */
   recordRecheck?: (recheck: FleetRecheck) => void;
+  /** Existing coordination snapshot reader, captured at the reply clock. */
+  claimsBoard?: typeof readFleetBoard;
   /** The per-order answer for a short "orders" ask; the default reads the
    * order trace plus one live-worker snapshot and formats the per-order reply. */
   orders?: (now: Date) => Promise<string>;
@@ -80,7 +84,11 @@ export async function recheckReplyWithRecord(now: Date, read: (now: Date) => Pro
 export async function composeOwnerRecheckReply(now: Date, deps: OwnerStatusDeps = {}): Promise<string> {
   try {
     if (deps.recheck !== undefined) return await deps.recheck(now);
-    return await recheckReplyWithRecord(now, n => readFleetRecheck({ now: () => n }), deps.recordRecheck ?? defaultRecordRecheck);
+    const reply = await recheckReplyWithRecord(now, n => readFleetRecheck({ now: () => n }), deps.recordRecheck ?? defaultRecordRecheck);
+    let claims: string;
+    try { claims = buildRecheckClaimsLine((deps.claimsBoard ?? readFleetBoard)({ now: now.getTime() }), now); }
+    catch { claims = 'Claims: UNKNOWN (coordination reader failed)'; }
+    return reply.replace(/^Claims:.*$/m, () => claims);
   } catch { return OWNER_RECHECK_FALLBACK; }
 }
 
