@@ -1,6 +1,6 @@
 /**
  * Opt-in Slack Events API ingress into the existing local agent bus.
- * No listener, token resolver, send path, model call or work launcher lives here.
+ * No listener, token resolver, model call or work launcher lives here.
  * Signatures authenticate transport; text and context references remain untrusted.
  */
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
@@ -8,6 +8,9 @@ import { isAbsolute } from 'node:path';
 import { appendBusInbox, type BusInboxPost, type BusInboxOptions } from '../fleet/bus-inbox.js';
 import { validateBusEnvelope, type BusEnvelope } from '../fleet/bus-envelope.js';
 import { scrubSecrets } from '../util/scrub.js';
+import { deliverSlackEnvelope } from '../agents/slack-transport.js';
+import { parseSlackThreadRef, slackThreadRef, slackTopicForChannel } from '../agents/slack-network.js';
+import { planReceivedAck } from './slack-received-ack.js';
 
 const MAX_AGE_MS = 300_000;
 const FUTURE_SKEW_MS = 5_000;
@@ -61,6 +64,11 @@ export interface SlackBusIngressOptions {
   now?: () => number;
   /** Trusted test seam; success must mean durable local persistence. */
   append?: (envelope: BusEnvelope, options: BusInboxOptions) => BusInboxPost;
+  /** Owner supplies the existing reviewed transport and its live policy checks.
+   * No credentials or implicit HOME/config reads are introduced by ingress. */
+  receivedAckTransport?: Parameters<typeof deliverSlackEnvelope>[1];
+  /** Test seam; production always uses the reviewed Slack sender. */
+  sendReceivedAck?: typeof deliverSlackEnvelope;
 }
 export interface SlackBusIngressResult {
   status: 'disabled' | 'refused' | 'ignored' | 'accepted' | 'partial';
@@ -199,13 +207,35 @@ export function createSlackBusIngress(options: SlackBusIngressOptions): (request
         envelopes.push(checked.value);
       }
       let posted = 0, duplicates = 0;
-      for (const envelope of envelopes) {
+      for (const [index, envelope] of envelopes.entries()) {
         let receipt: BusInboxPost;
         try { receipt = (options.append ?? appendBusInbox)(envelope, { root, now: () => now }); }
         catch { return result('partial', 'storage-unconfirmed', posted, duplicates); }
         if (receipt.status === 'posted') posted++;
         else if (receipt.status === 'duplicate') duplicates++;
         else return result('partial', `storage-${receipt.status}`, posted, duplicates);
+        // One canonical recipient owns the ack, even on partial fanout/replay.
+        // append success above means fsync + atomic rename completed first.
+        if (index === 0 && protocol.kind === 'request' && options.receivedAckTransport) {
+          const transport = options.receivedAckTransport;
+          const threadKey = slackThreadRef(policy.workspaceId, route.channelId, threadTs);
+          const ack = planReceivedAck({ receiptId: receipt.id, duplicate: receipt.status === 'duplicate',
+            threadKey, asOf: new Date(now).toISOString() });
+          if (ack) {
+            const failed = () => { console.warn('slack-received-ack-send-failed'); };
+            try {
+              const topic = slackTopicForChannel(transport.config, route.channelId);
+              if (!topic || !parseSlackThreadRef(threadKey) || transport.config.teamId !== policy.workspaceId) throw new Error('unmapped-thread');
+              const reply: BusEnvelope = { ...envelope, id: ack.dedupeKey, from: 'slack-received-ack', to: topic,
+                origin_bridge: 'slack-received-ack', channel_ref: threadKey,
+                sender: { agent_id: 'slack-received-ack', vendor: 'phantom', human: false, team: true },
+                body: { kind: 'note', text: ack.text, thread: threadKey, inReplyTo: receipt.id } };
+              void (options.sendReceivedAck ?? deliverSlackEnvelope)(reply, transport)
+                .then(sent => { if (sent.status !== 'sent' && sent.status !== 'duplicate') failed(); })
+                .catch(failed);
+            } catch { failed(); }
+          }
+        }
       }
       return result('accepted', 'persisted-locally', posted, duplicates);
     } catch { return result('refused', 'ingress-unavailable'); }
