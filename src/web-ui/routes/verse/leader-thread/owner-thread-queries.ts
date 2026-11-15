@@ -32,6 +32,7 @@ export interface OwnerChannelState {
 export interface ReplyGapState { teammate: string; unansweredCount: number; oldestUnansweredMs: number; state: 'ok' | 'late' | 'unknown' }
 
 export type ReceiptState = 'delivered' | 'pending' | 'failed';
+/** Per message id, per channel. A channel with no entry is "unknown". */
 export type OwnerReceipts = Record<string, Record<string, { state: ReceiptState; reason?: string }>>;
 
 export interface OwnerThreadRead {
@@ -44,7 +45,7 @@ export interface OwnerThreadRead {
   paused: boolean;
 }
 
-export const NO_OWNER_THREAD: OwnerThreadRead = { lines: [], paused: false, channels: [], replyGap: [] };
+export const NO_OWNER_THREAD: OwnerThreadRead = { lines: [], paused: false, channels: [], replyGap: [], receipts: {} };
 
 const isRecord = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value);
 
@@ -64,6 +65,7 @@ export function parseOwnerThread(value: unknown): OwnerThreadLine[] {
   return value.messages.flatMap(row => parseLine(row) ?? []);
 }
 
+/** Good receipts only; anything malformed is dropped (and so reads as unknown). */
 export function parseReceipts(value: unknown): OwnerReceipts {
   const out: OwnerReceipts = Object.create(null);
   if (!isRecord(value)) return out;

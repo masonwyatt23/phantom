@@ -103,6 +103,7 @@ export function createOwnerThreadApi(deps: OwnerThreadApiDeps = {}): ApiModule {
       const { adapters, kill, paused } = readOwnerCommsStatus(options);
       sendJson(res, 200, {
         ...thread,
+        // Optional: where each outgoing message went. Old clients ignore it.
         receipts: readReceipts(options.runsDir, thread.messages.filter(m => m.direction === 'outbound').map(m => m.id)),
         status: {
           kill,

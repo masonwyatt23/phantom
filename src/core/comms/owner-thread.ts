@@ -423,6 +423,7 @@ export async function sendOwnerReply(input: OwnerReplyInput, options: OwnerThrea
         mirror(options, stored);
         messageId = stored.id;
       }
+      // One receipt per channel so the desktop can show where the reply went, and what failed.
       if (messageId) {
         for (const row of deliveries) {
           const ok = row.status === 'sent' || row.status === 'duplicate';

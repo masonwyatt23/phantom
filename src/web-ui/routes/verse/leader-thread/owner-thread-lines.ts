@@ -8,6 +8,7 @@ import type { MergedLine } from './thread-merge-model.js';
 
 /** A MergedLine that names its speaker, e.g. "Mason via iMessage". */
 export type LabeledLine = MergedLine & { label?: string; receipt?: ReceiptItem[] };
+/** One channel's delivery state for an outgoing line; "unknown" = no record. */
 export interface ReceiptItem { channel: string; state: 'delivered' | 'pending' | 'failed' | 'unknown'; reason?: string }
 
 const CHANNEL_NAME: Readonly<Record<string, string>> = { desktop: 'Desktop', telegram: 'Telegram', email: 'Email', imessage: 'iMessage', slack: 'Slack' };
