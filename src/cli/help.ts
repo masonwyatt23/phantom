@@ -39,6 +39,18 @@ export interface AgentCommandDoc {
  */
 export const AGENT_COMMANDS: AgentCommandDoc[] = [
   {
+    usage: 'phm heartbeat status|digest [--json]',
+    description: 'Read local fast-heartbeat health or the bounded trailing-hour findings digest. No model calls or fleet changes; missing evidence stays unknown. Exit 0 read, 2 usage.',
+    safety: 'read',
+    jsonShape: 'heartbeat.status.v1 | {source,window_minutes,available,last_tick,model_health,findings,repeated_high}',
+  },
+  {
+    usage: 'phm heartbeat tick|watch [--json]',
+    description: 'Run due advisory observations using local fast only. Writes heartbeat state/journal, never launches, kills, merges or calls paid APIs. Watch is foreground; SIGINT/SIGTERM stop it. Exit 0 including recorded degradation, 2 usage.',
+    safety: 'append',
+    jsonShape: '{status:healthy|degraded|not_due|busy,tick?:heartbeat.fast.v1,reason?}',
+  },
+  {
     usage: 'phm onboard --ecosystem [--json] | phm onboard --ecosystem --grant --plan <planId> --select <id,id> [--json]',
     description: 'Detect existing capabilities, then grant one reviewed integration bundle. Names/state only; imports and locked-vault access stay in a trusted terminal. --yes never grants. Exit 0 preview/complete, 1 incomplete wiring, 2 refusal.',
     safety: 'append',
@@ -891,6 +903,7 @@ export const HELP_ENTRIES: HelpEntry[] = [
   { cmd: 'daemon start --once --drain diagnostic-reslices --limit 3', desc: 'Dormant non-dry diagnostic drain; compiled daemon trust roots are empty.', topic: 'autonomy' },
   { cmd: 'daemon stop',                  desc: 'Halt the daemon: set kill switch + clear running state.', topic: 'autonomy' },
   { cmd: 'daemon status',                desc: "Daemon roll-up: running?, today's spend vs cap, pending proposals.", topic: 'autonomy' },
+  { cmd: 'heartbeat status|tick|watch|digest [--json]', desc: 'Local advisory fast heartbeat: adaptive timing, bounded findings and deep-leader digest; no fleet actions or paid fallback.', topic: 'autonomy' },
   { cmd: 'daemon activation-preflight --request <path> [--json]', desc: 'Read-only verification of operator-custodied signed candidate and rollback artifacts; grants no service authority.', topic: 'safety' },
   { cmd: 'daemon activate --request <path> --authorize <digest> --confirm <digest> [--json]', desc: 'Dormant permit-gated 3.2.7 selection; preserves loaded=false and the exact disabled bit, and never starts a service.', topic: 'safety' },
   { cmd: 'daemon service-status',        desc: 'Read-only OS service state; remains available during the resident-mutation restriction.', topic: 'autonomy' },

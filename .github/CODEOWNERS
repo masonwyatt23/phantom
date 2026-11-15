@@ -533,6 +533,7 @@
 /test/harness-dispatch-api-model-311.test.ts @masonwyatt23
 /test/harness-dispatch-threading-311.test.ts @masonwyatt23
 /test/harness-store-hardening-310.test.ts @masonwyatt23
+/test/heartbeat-deep.test.ts @masonwyatt23
 /test/helpers/authority-310b.ts @masonwyatt23
 /test/helpers/fixture-custody.ts @masonwyatt23
 /test/helpers/fleet-github-310b.ts @masonwyatt23

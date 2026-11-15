@@ -53,3 +53,30 @@ no credential values in reports or receipts; no implicit enrollment or spending.
 
 Errors: initial exploratory searches included missing paths and overly broad output;
 subsequent reads use exact paths. No source changes made during discovery.
+
+
+# RQ-HEARTBEAT-DUAL-1
+
+## Goal
+Implement an advisory local fast heartbeat, persisted adaptive timing, bounded evidence and findings, and deep leader consumption in fewer than 20 changed files. Leave all work uncommitted.
+
+## Phases
+- [x] Inspect repository guidance, transport, evidence and leader entry points.
+- [x] Implement bounded inputs/schema, adaptive tick and durable deduplication.
+- [x] Wire CLI, foreground Mac runner and native deep leader; document shell handoff.
+- [x] Verify hermetic heartbeat/leader/authority regressions, static checks and docs; write BRIDGE_NOTES.md.
+- [x] Record the full repository lint result and final net LOC.
+
+## Decisions
+- Local fast model only; optional paid fallback omitted to guarantee zero API spend.
+- Reuse existing transport and locking/storage primitives; do not install live scripts.
+- Native leaderTick consumes findings; live leader-tick.sh is not tracked/readable here.
+
+## Errors encountered
+- Global npm install: EPERM in configured prefix; temporary-prefix retry succeeded (3.30.31).
+- GitHub PR query: host gh configuration denied; provided fleet context has no duplicate heartbeat work.
+- Wire status: client config access denied; gateway tooling unavailable in this session.
+- Two inspection globs had no matches; followed with explicit paths.
+
+## Status
+27 heartbeat tests, 25 leader tests and 10 authority tests pass. Full typecheck and verify-changed pass. Four unrelated baseline assertions remain in broader suites; the broader leader timeout passed unchanged on isolated rerun. CODEOWNERS and the closure snapshot were regenerated with the documented command (no new roots; three read-only heartbeat modules). Full repository lint completed with three pre-existing no-control-regex errors in unchanged leader-reply tests and 273 warnings. Final diff has 19 files and stays uncommitted; BRIDGE_NOTES.md contains exact commands, pass/fail counts, limits and net LOC.

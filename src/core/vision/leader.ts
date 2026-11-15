@@ -46,6 +46,8 @@ import { hasLeaderNetworkConfig } from '../agents/leader-network-config.js';
 import { loadConfigReadOnlyStrict } from '../config.js';
 import { leaderPreferencesReady, resolveLeaderPreferences, unavailableLeaderPreferences, type ResolvedLeaderPreferences } from './leader-preferences.js';
 import { join } from 'node:path';
+import { homedir } from 'node:os';
+import { DEEP_HEARTBEAT_INSTRUCTION, readFastHeartbeatDigest } from '../heartbeat/deep.js';
 
 import type { AshlrConfig, Goal } from '../types.js';
 import { scrubPrivateText } from '../util/scrub.js';
@@ -224,6 +226,7 @@ export interface LeaderModelRow {
 
 /** Where evidence comes from. Every source may throw; a thrower is reported as unknown, never as zero. */
 export interface LeaderEvidenceSources {
+  fastHeartbeat?(nowMs: number): ReturnType<typeof readFastHeartbeatDigest>;
   outcomes?(): import('./leader-outcomes.js').LeaderOutcomeEvidence;
   /** Recorded metadata only; source failure remains unknown. */
   executionFeedback?(nowMs: number): import('../fleet/execution-feedback.js').ExecutionFeedbackSnapshot;
@@ -250,6 +253,7 @@ export interface LeaderEvidenceSources {
 }
 
 export interface LeaderEvidence {
+  fastHeartbeat?: ReturnType<typeof readFastHeartbeatDigest>;
   outcomes?: import('./leader-outcomes.js').LeaderOutcomeEvidence;
   executionFeedback?: import('../fleet/execution-feedback-types.js').LeaderExecutionFeedback;
   grant: {
@@ -400,6 +404,7 @@ export async function gatherLeaderEvidence(sources: LeaderEvidenceSources, nowMs
   })).sort((a, b) => a.seatId.localeCompare(b.seatId)) : null;
 
   const outcomes = sources.outcomes ? attempt('outcomes', () => sources.outcomes!()) : null;
+  const fastHeartbeat = sources.fastHeartbeat ? attempt('fast-heartbeat', () => sources.fastHeartbeat!(nowMs)) : null;
   if (outcomes && !outcomes.complete) unknown.push('outcomes-partial');
   const goalRead = attempt('goals', () => sources.goals());
   // An incomplete read is a LOWER BOUND with its caveat, never null: null read
@@ -474,6 +479,7 @@ export async function gatherLeaderEvidence(sources: LeaderEvidenceSources, nowMs
     ...(lessons ? { lessons } : {}),
     ...(playbooks && playbooks.length > 0 ? { playbooks } : {}),
     ...(executionFeedback ? { executionFeedback } : {}),
+    ...(fastHeartbeat ? { fastHeartbeat } : {}),
     ...(selfNotes && selfNotes.length > 0 ? { selfDirectives: selfNotes } : {}),
     unknown: [...new Set(unknown)].sort(),
   };
@@ -534,6 +540,7 @@ export function buildLeaderPrompt(
     untrustedBlock('GOALS AND FOCUS', evidence.goals),
     ...(evidence.outcomes ? [untrustedBlock('DESIRED OUTCOMES AND SAVED TARGET ALIASES (scope is immutable to planner; incomplete sources are unknown)', evidence.outcomes)] : []),
     untrustedBlock('FLEET OUTCOMES (7 days; null = unknown)', evidence.fleet),
+    ...(evidence.fastHeartbeat ? [untrustedBlock('FAST HEARTBEAT (advisory; trailing hour; missing is unknown)', evidence.fastHeartbeat)] : []),
     untrustedBlock('MODEL ROI (30 days)', evidence.models),
     untrustedBlock('REASONING INSIGHTS (deterministic digest)', evidence.reasoning),
     untrustedBlock('STANDARDS IN FORCE', evidence.standards),
@@ -569,6 +576,7 @@ export function buildLeaderPrompt(
 ${blocks.join('\n\n')}
 
 === YOUR TASK ===
+${DEEP_HEARTBEAT_INSTRUCTION}
 Name THE BOTTLENECK and THE MOVE (with an expectedDelta on a measurable metric). Build the kill list. ${!goalPreferencesReady(preferences) ? 'Do not propose new goals while goal preferences are invalid or unavailable.' : preferences.maxGoalProposalsPerMemo === null ? 'There is no per-memo goal preference limit (the total action transport remains bounded).' : `Propose at most ${preferences.maxGoalProposalsPerMemo} goals.`} Propose at most ${LEADER_LIMITS.maxHypothesesPerMemo} hypotheses. Ask Mason only genuine strategic forks.${focus}`;
 }
 
@@ -991,6 +999,7 @@ export async function loadDefaultLeaderRunDeps(cfg: AshlrConfig): Promise<Leader
     adviseActionClass: defaultLeaderActionAdvisor(cfg),
     announceRelease: () => import('../fleet/release-live-announce.js').then(m => m.runDefaultReleaseAnnouncement()),
     sources: {
+      fastHeartbeat: (nowMs) => readFastHeartbeatDigest(process.env.ASHLR_RUNS_DIR ?? join(homedir(), '.ashlr-runs'), nowMs),
       outcomes: () => apply.outcomes!.evidence(),
       executionFeedback: (nowMs) => {
         const root = process.env.ASHLR_HOME;

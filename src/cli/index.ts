@@ -2646,6 +2646,11 @@ async function main(): Promise<void> {
         break;
       }
 
+      case 'heartbeat': {
+        process.exitCode = await (await import('./heartbeat.js')).cmdHeartbeat(rest);
+        break;
+      }
+
       case 'drive': {
         process.exitCode = await (await loadDriveCmd())(rest);
         break;
