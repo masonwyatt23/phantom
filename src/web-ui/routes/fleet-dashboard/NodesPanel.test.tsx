@@ -33,4 +33,33 @@ describe('NodesPanel', () => {
     render(<NodesPanel />);
     await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('phm fleet nodes'));
   });
+
+  it('shows a healthy inventory without an error alert', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ ...SNAP, error: null }), { status: 200 })));
+    render(<NodesPanel />);
+    await waitFor(() => expect(screen.getByText(/★ leader/)).toBeInTheDocument());
+    expect(screen.getByText('Nodes (2)')).toBeInTheDocument();
+    expect(screen.getByText('Leader: mac-mini-1')).toBeInTheDocument();
+    expect(screen.getByText('30s ago')).toBeInTheDocument();
+    expect(screen.getByText('gh, os:darwin')).toBeInTheDocument();
+    expect(screen.getByText('no heartbeat')).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('surfaces an inventory error with the command that explains it', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+      ...SNAP, nodes: [], leaderId: null, observedAt: null, error: 'inventory failed validation',
+    }), { status: 200 })));
+    render(<NodesPanel />);
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('inventory failed validation'));
+    expect(screen.getByRole('alert')).toHaveTextContent('phm fleet nodes');
+    expect(screen.getByText('No live leader lease')).toBeInTheDocument();
+  });
+
+  it('says how to add a node when the inventory is empty', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ ...SNAP, nodes: [], leaderId: null, error: null }), { status: 200 })));
+    render(<NodesPanel />);
+    await waitFor(() => expect(screen.getByText(/No nodes have joined/)).toBeInTheDocument());
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
 });

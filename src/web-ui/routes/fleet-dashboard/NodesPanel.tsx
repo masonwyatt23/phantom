@@ -30,8 +30,9 @@ export function NodesPanel() {
         ) : !snap ? (
           <p role="status">Loading nodes...</p>
         ) : snap.nodes.length === 0 ? (
-          <p className={panel.emptyState}>
-            {snap.error ?? 'No nodes have joined this fleet.'}
+          <p className={panel.emptyState} role={snap.error ? 'alert' : undefined}>
+            <span>{snap.error ?? 'No nodes have joined this fleet.'}</span>
+            {snap.error ? <> Run <code>phm fleet nodes</code> in a terminal to see why, then reload.</> : null}
           </p>
         ) : (
           <>
