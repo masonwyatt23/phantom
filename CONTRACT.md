@@ -459,3 +459,18 @@ apply uses existing drop admission, and digest reports twelve-hour observations.
 No merge, publish, send or scheduler authority is added. The full limits,
 dedupe, protected-scope and failure contract is in the
 [feedback pipeline contract](docs/contracts/CONTRACT-RQ-GROK-FEEDBACKLOOP-1.md).
+
+## Fleet outcome measurement and advisory policy v1
+
+`buildOutcomeMetrics` in `src/core/fleet/outcome-metrics.ts` folds injected job
+events into attempt-cohort lane/model-tier rates, measured USD estimates,
+repo merge velocity, seven-day revert rates and merge-time percentiles.
+Missing evidence stays null; sample counts and event references accompany
+measurements. `suggestOutcomePolicy` returns bounded, evidence-backed
+`PolicySuggestion` advice with `suggestOnly: true`; it never applies changes.
+`generateWeeklySelfReport` produces Markdown for chief-of-staff attachment.
+
+`phm fleet metrics report --hours 24 --json`, `suggest --json` and `weekly`
+read the jobs ledger only. Weekly defaults to 168 hours. The
+[full contract](docs/contracts/CONTRACT-FLEET-OUTCOME-METRICS.md) defines
+cohorts, observation coverage, unknowns, thresholds and exit codes.
