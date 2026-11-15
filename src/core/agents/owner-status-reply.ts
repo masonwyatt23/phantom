@@ -1,4 +1,5 @@
-/** Fixed, read-only status answer for a verified owner's short "status" ask. */
+/** Fixed, read-only answers for a verified owner's short asks. This module
+ * stays outside the Tier-1 import closure of slack-leader.ts. */
 import { isStatusAsk } from '../fleet/status-ask.js';
 import { buildStatusDigest } from '../leader/status-digest.js';
 import { gatherStatusDigestInput } from '../leader/status-digest-sources.js';
@@ -26,6 +27,10 @@ import { readLaneTargets, type LaneTargetsV1 } from '../fleet/runs-lane-targets.
 import type { LiveJobIds } from '../fleet/order-work-state.js';
 import { defaults as runtimeDefaults, readRuntimeSnapshot, type RuntimeSnapshot } from '../fleet/runtime-snapshot.js';
 import { formatRuntimeStatusLines } from '../fleet/runtime-status-lines.js';
+import { isResultsAsk } from '../fleet/results-ask.js';
+import { formatResultsReply } from '../fleet/results-reply.js';
+import { projectCoordinationReturns } from '../fleet/coordination-returns-view.js';
+import { readFleetBoard } from '../fleet/coordination.js';
 
 /** The five-line digest from real state; the heading is swapped for the clock below. */
 const digestBrief = async (runsDir: string, now: Date): Promise<string> =>
@@ -36,6 +41,7 @@ export const OWNER_RECHECK_FALLBACK = "Phantom recheck: the recheck read failed;
 export const OWNER_ORDERS_FALLBACK = "Phantom orders: the orders read failed; your message is in the Leader's inbox.";
 export const OWNER_REVIEW_FALLBACK = "Phantom review pick: the read failed; your message is in the Leader's inbox.";
 export const OWNER_OWNERS_FALLBACK = "Phantom owners: the ownership read failed; your message is in the Leader's inbox.";
+export const OWNER_RESULTS_FALLBACK = "Phantom results: the results read failed; your message is in the Leader's inbox.";
 
 /** Exact short asks only; "status of the release pr #12" is a request for the Leader. */
 export function isOwnerStatusRequest(text: string): boolean {
@@ -73,6 +79,8 @@ export interface OwnerStatusDeps {
   /** The surface-ownership answer for a short "owners" ask; the default reads
    * every SURFACES key (ledger + git history) and formats it. */
   owners?: (now: Date) => Promise<string>;
+  /** Retained RESULT receipts for an exact short results ask. */
+  results?: (now: Date) => Promise<string>;
 }
 
 const defaultRecordRecheck = (recheck: FleetRecheck): void => { appendRecheckRecord(ashlrHome(), recheck, homedir()); };
@@ -195,6 +203,15 @@ export async function composeOwnerOwnersReply(now: Date, deps: OwnerStatusDeps =
   } catch { return OWNER_OWNERS_FALLBACK; }
 }
 
+/** Never throws: a results ask gets retained evidence or the fixed fallback. */
+export async function composeOwnerResultsReply(now: Date, deps: OwnerStatusDeps = {}): Promise<string> {
+  try {
+    if (deps.results !== undefined) return await deps.results(now);
+    const nowMs = now.getTime();
+    return formatResultsReply(projectCoordinationReturns(readFleetBoard({ now: nowMs }), nowMs));
+  } catch { return OWNER_RESULTS_FALLBACK; }
+}
+
 const defaultBoard = (now: Date): WorkBoardResult => listWorkBoard({ root: join(ashlrHome(), 'fleet'), now: now.getTime(), limit: 20 });
 
 /** A failed board read never touches the digest: it only becomes the "unknown" line. */
@@ -251,10 +268,11 @@ async function composeSlackStatusReply(runsDir: string, now: Date, deps: OwnerSt
  * holds for the fleet recheck, orders and review readers: an exact "recheck"
  * ask is answered with the recheck verdict, an exact "orders" ask with the
  * per-order reply, an exact "review" ask with the unowned review pick, and
- * every other gated ask with the status digest. */
+ * an exact results ask with retained RESULT receipts, and every other gated
+ * ask with the status digest. */
 export function ownerStatusReply(deps: OwnerStatusDeps = {}): { ask: (text: string) => boolean; compose: (runsDir: string, now: Date, text?: string) => Promise<string>; readonly fallback: string } {
   return {
-    ask: text => isOwnerStatusRequest(text) || isRecheckAsk(text) || isOrdersAsk(text) || isReviewAsk(text) || isOwnersAsk(text),
+    ask: text => isOwnerStatusRequest(text) || isRecheckAsk(text) || isOrdersAsk(text) || isReviewAsk(text) || isOwnersAsk(text) || isResultsAsk(text),
     compose: (runsDir, now, text) => text !== undefined && isRecheckAsk(text)
       ? composeOwnerRecheckReply(now, deps)
       : text !== undefined && isOrdersAsk(text)
@@ -263,7 +281,9 @@ export function ownerStatusReply(deps: OwnerStatusDeps = {}): { ask: (text: stri
           ? composeOwnerReviewReply(now, deps)
           : text !== undefined && isOwnersAsk(text)
             ? composeOwnerOwnersReply(now, deps)
-            : composeSlackStatusReply(runsDir, now, deps),
+            : text !== undefined && isResultsAsk(text)
+              ? composeOwnerResultsReply(now, deps)
+              : composeSlackStatusReply(runsDir, now, deps),
     fallback: OWNER_STATUS_FALLBACK,
   };
 }
