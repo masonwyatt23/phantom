@@ -1,4 +1,8 @@
-/** Read-only host memory + memguard projection. No repair or dispatch authority. */
+/**
+ * Read-only host memory + memguard projection, plus the disk forecast at
+ * GET /api/verse/fleet/memory/disk-forecast (unknown when history is missing
+ * or unreadable). No repair, cleanup or dispatch authority.
+ */
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { readFleetMemoryFiles, type FleetMemoryFiles } from '../fleet/memory-files.js';
