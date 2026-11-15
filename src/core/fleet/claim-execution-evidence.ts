@@ -7,8 +7,7 @@
  *
  * A claim names a job when its id (checked first) or its task text carries
  * an `RQ-…` token. A worker matches a named job when `worker.job` equals the
- * token exactly (case-sensitive) and, when both repos are non-empty, the
- * worker repo's last path segment equals the claim repo's last segment —
+ * token exactly (case-sensitive) and, the worker repo is usable and equals the claim repo's last segment —
  * launch.sh passes a bare repo name while claims carry `owner/repo`. Only a
  * record satisfying the process reader's contract — a positive safe-integer
  * pid, string job/repo/lane/tier and a null-or-non-negative-safe-integer
@@ -108,9 +107,13 @@ const label = (value: unknown, allowSlash = false): string => {
   return (allowSlash ? REPO_LABEL_RE : LABEL_RE).test(v) && scrubSecrets(v) === v ? v : UNKNOWN;
 };
 
-const lastSegment = (repo: string): string => {
-  const parts = repo.split('/').filter(part => part.length > 0);
-  return parts.length === 0 ? '' : parts[parts.length - 1]!;
+/** Accept a bare name or owner/name, never empty or path-like components. */
+const repoSegment = (value: unknown, qualified: boolean): string | null => {
+  if (typeof value !== 'string' || scrubSecrets(value) !== value) return null;
+  const parts = value.split('/');
+  if (parts.length > (qualified ? 2 : 1)) return null;
+  if (!parts.every(part => /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(part))) return null;
+  return parts[parts.length - 1]!;
 };
 
 /** Loose claim shape so an injected or future-schema row can never throw here. */
@@ -170,15 +173,19 @@ interface WorkerMatch {
  * can answer UNKNOWN instead of claiming a healthy absence.
  */
 function workerFor(jobId: string, claimRepo: string, workers: unknown[]): WorkerMatch {
-  const claimSegment = lastSegment(claimRepo);
+  const claimSegment = repoSegment(claimRepo, true);
   let best: LiveWorker | null = null;
   let malformedMatch = false;
   for (const candidate of workers) {
     if (candidate === null || typeof candidate !== 'object') continue;
     const worker = candidate as LiveWorker;
     if (worker.job !== jobId) continue;
-    const workerSegment = lastSegment(text(worker.repo));
-    if (claimSegment !== '' && workerSegment !== '' && workerSegment !== claimSegment) continue;
+    const workerSegment = repoSegment(worker.repo, false);
+    if (claimSegment === null || workerSegment === null) {
+      malformedMatch = true;
+      continue;
+    }
+    if (workerSegment !== claimSegment) continue;
     if (!usableWorkerEvidence(worker)) {
       malformedMatch = true;
       continue;
