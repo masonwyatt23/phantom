@@ -3,7 +3,7 @@
  * Server-Sent Events surface for the desktop native shell, sibling to the
  * read routes in wb-read-api.ts.
  *
- * EVENT FAMILY
+ * TWO FAMILIES ON ONE STREAM
  *
  *   wb.*        `event: wb.snapshot|wb.action|wb.gh` — the kinds declared by
  *               schema/workbench.v1/event.schema.json. `data:` is a
@@ -15,16 +15,24 @@
  *               source — in-process producers publish it through
  *               publishWbEvent() (the action route lands in a later WB job).
  *
+ *   queue.v1    `event: queue.v1` — the queue.v1 relay. Each frame carries
+ *               one station event (`id:` = eventId for Last-Event-ID dedup)
+ *               relayed from the RQ-QUEUE-2 station journal. Until that job
+ *               lands the journal is simply absent and the relay is silent;
+ *               the on-disk contract it reads is the one router-queue's
+ *               `observe|publish|poll` verbs append to.
+ *
  * SOURCES AND CADENCE
  *
  *   snapshot+budget  ~/.ashlr/routing/capacity.json + ~/.ashlr/budget.json
  *   gh               the shared single-flight wb gh cache (getCachedWbGhStatus)
+ *   queue journal    ~/.ashlr/telemetry/router-queue/events.json
  *
- * The tick is bounded (WB_EVENTS_POLL_MS) per connection and cleared on
- * disconnect, read-session expiry and server drain. NOTHING here polls
- * `~/.ashlr-runs` or any other Mac-dispatcher path. (The queue.v1 station
- * relay from the original WB-8 design is deferred: its journal producer,
- * RQ-QUEUE-2, has not landed, so there is nothing on disk to relay yet.)
+ * The tick is bounded (WB_EVENTS_POLL_MS) per connection, stat-gated (a
+ * journal/snapshot whose mtime+size is unchanged is never re-parsed), and
+ * cleared on disconnect, read-session expiry and server drain. NOTHING here
+ * polls `~/.ashlr-runs` or any other Mac-dispatcher path — the queue relay
+ * reads only the `.ashlr` journal above.
  *
  * SECURITY
  *  - Same boundary as every /api/* GET (server.ts), plus the SSE convention:
@@ -33,11 +41,17 @@
  *    browser EventSource can connect.
  *  - Every emitted byte passes through sanitizePublicJson — secret-shaped
  *    strings become [REDACTED], this user's home paths become `~`.
+ *  - The journal is a private local file; events are shape-validated and
+ *    capped before relay. A malformed journal silences the relay for that
+ *    tick — it never emits half-parsed content and never logs file data.
  *  - Shares the /api/events connection cap (registerSse / deregisterSse).
  */
 
 import { createHash } from 'node:crypto';
+import { lstatSync, readFileSync } from 'node:fs';
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 
 import type { AshlrConfig } from '../types.js';
 import { sanitizePublicJson } from '../util/public-json.js';
@@ -58,6 +72,23 @@ export const WB_EVENTS_POLL_MS = 2_000;
 export const WB_EVENTS_KEEPALIVE_MS = 15_000;
 /** Queued-but-unsent bytes past which a stalled wb stream is closed. */
 export const WB_EVENTS_MAX_BUFFERED_BYTES = 4 * 1024 * 1024;
+/** Journal size cap — mirrors the RQ-QUEUE-2 station journal bound. */
+export const WB_QUEUE_JOURNAL_MAX_BYTES = 16 * 1024 * 1024;
+/** Station events relayed per tick; the remainder follows on later ticks. */
+export const WB_QUEUE_MAX_EVENTS_PER_TICK = 200;
+/** Seen-eventId memory bound per connection. */
+const WB_QUEUE_SEEN_CAP = 20_000;
+/** Events array bound accepted from the journal. */
+const WB_QUEUE_MAX_JOURNAL_EVENTS = 20_000;
+
+/**
+ * The RQ-QUEUE-2 station journal. Deliberately under `~/.ashlr` (Phantom's
+ * own tree), NOT `~/.ashlr-runs` — the Mac dispatcher's directory is never
+ * polled by this surface.
+ */
+export function wbQueueEventsJournalPath(): string {
+  return join(homedir(), '.ashlr', 'telemetry', 'router-queue', 'events.json');
+}
 
 // ---------------------------------------------------------------------------
 // wb.* event kinds (schema/workbench.v1/event.schema.json)
@@ -91,6 +122,162 @@ export function publishWbEvent(kind: WbEventKind, fields: WbEventFields = {}): v
     } catch {
       // One broken stream must not starve the rest.
     }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// queue.v1 relay — RQ-QUEUE-2 station journal
+// ---------------------------------------------------------------------------
+
+/** Station names the relay accepts (the RQ-QUEUE-2 QUEUE_STATIONS contract). */
+export const WB_QUEUE_STATIONS = [
+  'planned', 'READY', 'claimed', 'publish', 'pr-ci', 'merge-queue', 'merged', 'released', 'fix-main',
+] as const;
+
+/** Station → allowed evidence keys, mirroring router-queue.ts EVIDENCE_KEYS. */
+const WB_QUEUE_EVIDENCE_KEYS: Record<string, readonly string[]> = {
+  planned: [],
+  READY: [],
+  claimed: ['claimedAt'],
+  publish: ['pr', 'headSha', 'publishedAt'],
+  'pr-ci': ['pr', 'headSha', 'ci'],
+  'merge-queue': ['pr', 'headSha', 'entryId'],
+  merged: ['pr', 'headSha', 'mergeSha'],
+  released: ['pr', 'mergeSha', 'releaseId', 'tag'],
+  'fix-main': ['pr', 'mergeSha', 'runId'],
+};
+
+/** Station → the only source allowed to attest it (router-queue.ts SOURCES). */
+const WB_QUEUE_STATION_SOURCES: Record<string, string> = {
+  planned: 'router-queue',
+  READY: 'router-queue',
+  claimed: 'claim-ledger',
+  publish: 'publish.sh',
+  'pr-ci': 'github',
+  'merge-queue': 'github',
+  merged: 'github',
+  released: 'github',
+  'fix-main': 'github',
+};
+
+export interface WbQueueStationEvent {
+  schemaVersion: 1;
+  eventId: string;
+  jobId: string;
+  repo: string;
+  attempt: string;
+  station: string;
+  observedAt: string;
+  source: string;
+  evidence: Record<string, string | number>;
+}
+
+const TOKEN_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+const EVENT_ID_RE = /^[a-f0-9]{64}$/;
+const REPO_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}\/[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$/;
+// router-queue.ts timestamp(): UTC ISO with milliseconds, nothing else.
+const OBSERVED_AT_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
+/**
+ * Strict shape gate for one station event. Anything off-contract is dropped
+ * individually — a corrupt tail must not blind the relay, and nothing
+ * unvalidated is ever emitted. Evidence values stay string|number and small.
+ */
+function parseStationEvent(value: unknown): WbQueueStationEvent | null {
+  if (!isRecord(value)) return null;
+  const { schemaVersion, eventId, jobId, repo, attempt, station, observedAt, source, evidence } = value;
+  if (schemaVersion !== 1) return null;
+  if (typeof eventId !== 'string' || !EVENT_ID_RE.test(eventId)) return null;
+  if (typeof jobId !== 'string' || !TOKEN_RE.test(jobId)) return null;
+  if (typeof repo !== 'string' || !REPO_RE.test(repo)) return null;
+  if (typeof attempt !== 'string' || !TOKEN_RE.test(attempt)) return null;
+  if (typeof station !== 'string' || !(WB_QUEUE_STATIONS as readonly string[]).includes(station)) return null;
+  if (typeof observedAt !== 'string' || !OBSERVED_AT_RE.test(observedAt)
+    || !Number.isFinite(Date.parse(observedAt)) || new Date(observedAt).toISOString() !== observedAt) return null;
+  // The station→source attestation pair is part of the contract: a 'github'
+  // event can never claim the 'planned' station, and vice versa.
+  if (typeof source !== 'string' || WB_QUEUE_STATION_SOURCES[station] !== source) return null;
+  if (!isRecord(evidence)) return null;
+  const keys = Object.keys(evidence);
+  const allowed = WB_QUEUE_EVIDENCE_KEYS[station] ?? [];
+  if (keys.length !== allowed.length || !keys.every(k => allowed.includes(k))) return null;
+  const clean: Record<string, string | number> = {};
+  for (const key of keys) {
+    if (key.length > 60) return null;
+    const v = evidence[key];
+    if (typeof v === 'number') {
+      if (!Number.isFinite(v)) return null;
+      clean[key] = v;
+    } else if (typeof v === 'string') {
+      if (v.length > 500) return null;
+      clean[key] = v;
+    } else {
+      return null;
+    }
+  }
+  return { schemaVersion: 1, eventId, jobId, repo, attempt, station, observedAt, source, evidence: clean };
+}
+
+export interface WbQueueJournalRead {
+  /** mtimeMs:size — re-parse only when the file actually changed. */
+  signature: string;
+  events: WbQueueStationEvent[];
+}
+
+/**
+ * Read + validate the station journal. Returns null when the file is absent,
+ * unsafe (symlink/non-regular/oversized), malformed, or carries no valid
+ * envelope — every failure mode is "relay nothing", never a throw and never
+ * a partial emit.
+ */
+export function readWbQueueJournal(path: string = wbQueueEventsJournalPath()): WbQueueJournalRead | null {
+  let stat;
+  try {
+    stat = lstatSync(path);
+  } catch {
+    return null; // absent (ENOENT) or unreadable — same honest answer
+  }
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.size > WB_QUEUE_JOURNAL_MAX_BYTES) return null;
+  let text: string;
+  try {
+    text = readFileSync(path, 'utf8');
+  } catch {
+    return null;
+  }
+  let doc: unknown;
+  try {
+    doc = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  // Same envelope the RQ-QUEUE-2 store writes/reads: exactly these two keys.
+  if (!isRecord(doc) || Object.keys(doc).sort().join(',') !== 'events,schemaVersion'
+    || doc['schemaVersion'] !== 1 || !Array.isArray(doc['events'])) return null;
+  const raw = doc['events'];
+  if (raw.length > WB_QUEUE_MAX_JOURNAL_EVENTS) return null;
+  const events: WbQueueStationEvent[] = [];
+  for (const entry of raw) {
+    const event = parseStationEvent(entry);
+    if (event) events.push(event);
+  }
+  return { signature: `${stat.mtimeMs}:${stat.size}`, events };
+}
+
+/** Synchronous baseline read used once at connect (before the first tick). */
+function baselineQueueJournal(
+  seen: Set<string>,
+  state: { signature: string | null },
+  path: string,
+): void {
+  const read = readWbQueueJournal(path);
+  if (!read) return;
+  state.signature = read.signature;
+  for (const event of read.events) {
+    if (seen.size < WB_QUEUE_SEEN_CAP) seen.add(event.eventId);
   }
 }
 
@@ -148,6 +335,8 @@ export interface WbEventsDeps {
   ghStatus?: (cfg: AshlrConfig) => Promise<unknown>;
   /** Test seam: replaces the snapshot+budget digest input. */
   snapshotState?: () => unknown;
+  /** Test seam: replaces the queue journal path. */
+  queueJournalPath?: string;
   /** Test seam: enrolled repo paths for the default gh read (mirrors WbGhDeps). */
   paths?: () => string[];
   /** Test seam: gh subprocess runner for the default gh read (mirrors WbGhDeps). */
@@ -160,8 +349,8 @@ function wbTimestamp(): string {
 }
 
 /**
- * Handle GET /api/wb/v1/events. Synchronous entry; the stream lives until
- * the client disconnects, the read session expires, or the server drains SSE.
+ * Handle GET /api/wb/v1/events. Synchronous entry; the stream lives until the
+ * client disconnects, the read session expires, or the server drains SSE.
  */
 export function handleWbEventsSse(
   req: IncomingMessage,
@@ -234,6 +423,46 @@ export function handleWbEventsSse(
     sendFrame(`event: ${kind}\ndata: ${JSON.stringify(sanitizePublicJson(event))}\n\n`);
   };
 
+  // ── queue.v1 relay state ────────────────────────────────────────────────
+  const journalPath = deps.queueJournalPath ?? wbQueueEventsJournalPath();
+  const queueSeen = new Set<string>();
+  const queueState: { signature: string | null } = { signature: null };
+  // Baseline BEFORE the first tick: events already in the journal are
+  // history, not news — the relay announces transitions, not backlog.
+  baselineQueueJournal(queueSeen, queueState, journalPath);
+
+  const relayQueue = (): void => {
+    if (ended || congested) return;
+    const read = readWbQueueJournal(journalPath);
+    if (!read) return; // absent/unreadable/malformed — silent, retried next tick
+    if (read.signature === queueState.signature) return;
+    let emitted = 0;
+    let pending = false;
+    for (const event of read.events) {
+      if (queueSeen.has(event.eventId)) continue;
+      if (emitted >= WB_QUEUE_MAX_EVENTS_PER_TICK) {
+        pending = true;
+        break;
+      }
+      queueSeen.add(event.eventId);
+      emitted += 1;
+      if (queueSeen.size > WB_QUEUE_SEEN_CAP) {
+        // Bound memory: drop the oldest insertions, keep the newest.
+        const excess = queueSeen.size - WB_QUEUE_SEEN_CAP;
+        let i = 0;
+        for (const id of queueSeen) {
+          if (i++ >= excess) break;
+          queueSeen.delete(id);
+        }
+      }
+      sendFrame(`id: ${event.eventId}\nevent: queue.v1\ndata: ${JSON.stringify(sanitizePublicJson(event))}\n\n`);
+      if (ended) return;
+    }
+    // Only mark the signature consumed when every valid event was relayed;
+    // a capped batch keeps the old signature so the next tick resumes.
+    if (!pending) queueState.signature = read.signature;
+  };
+
   // ── poll-derived wb.* kinds ─────────────────────────────────────────────
   let lastSnapshotDigest: string | null = null;
   let lastGhDigest: string | null = null;
@@ -264,6 +493,7 @@ export function handleWbEventsSse(
       } catch {
         // Same: best-effort slice.
       }
+      relayQueue();
     } finally {
       inFlight = false;
     }

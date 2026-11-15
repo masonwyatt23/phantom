@@ -10,7 +10,7 @@
  *                             (web/fleet-status-cache.ts getCachedWbGhStatus)
  *   GET /api/wb/v1/budget   → budget policy + per-seat usage projection
  *   GET /api/wb/v1/events   → SSE stream of workbench.event.v1 kinds
- *                             (wb.snapshot / wb.gh / wb.action) (wb-events.ts)
+ *                             (wb.snapshot / wb.gh / wb.action) plus queue.v1 (wb-events.ts)
  *   GET /api/wb/v1/fleet    → composite live fleet workbench view (lanes,
  *                             jobs, PRs, leader state — see
  *                             workbench-fleet-view.ts)
@@ -198,7 +198,7 @@ export interface WbGhDeps {
 export interface WbApiDeps extends WbGhDeps {
   /** Minted read session — required by the SSE route, absent on header auth. */
   readSession?: { id: string; expiresAt: number };
-  /** Test seams for GET /api/wb/v1/events (cadence, gh read). */
+  /** Test seams for GET /api/wb/v1/events (cadence, journal path, gh read). */
   events?: WbEventsDeps;
   /** Test seams for GET /api/wb/v1/fleet (queue dir, clock). */
   fleet?: WorkbenchFleetViewDeps;
