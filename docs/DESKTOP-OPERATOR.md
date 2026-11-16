@@ -39,12 +39,12 @@ Build and ad-hoc sign on the Mac:
 
 ```sh
 mkdir -p ~/.ashlr/bin
-swiftc -O -framework ApplicationServices -framework Cocoa -framework Vision -o ~/.ashlr/bin/desktop-operator tools/desktop-operator/main.swift
+swiftc -O -target "$(uname -m)-apple-macos14.0" -framework ApplicationServices -framework Cocoa -framework Vision -o ~/.ashlr/bin/desktop-operator tools/desktop-operator/main.swift
 codesign -s - --force ~/.ashlr/bin/desktop-operator
 phm desktop doctor --json
 ```
 
-The helper is loaded only from `~/.ashlr/bin/desktop-operator`.
+The explicit macOS 14 deployment target is required with Xcode 26 / Swift 6.2: `CGWindowListCreateImage` is obsoleted for deployment targets of macOS 15 and later. It keeps the existing best-effort window capture and OCR path; migrating capture to ScreenCaptureKit is follow-up work. The helper is loaded only from `~/.ashlr/bin/desktop-operator`.
 
 ## Writes
 

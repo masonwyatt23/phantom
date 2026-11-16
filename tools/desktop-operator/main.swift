@@ -290,8 +290,8 @@ func pointOverTarget(_ point: CGPoint, pid: pid_t) -> Bool {
         let layer = info[kCGWindowLayer as String] as? Int ?? 0
         if layer != 0 { continue }
         // kCGWindowBounds is already a dictionary. Cast that value, do not rebuild [String: Double].
-        guard let bounds = info[kCGWindowBounds as String] as? CFDictionary,
-              let rect = CGRect(dictionaryRepresentation: bounds) else { continue }
+        guard let bounds = info[kCGWindowBounds as String] as? NSDictionary,
+              let rect = CGRect(dictionaryRepresentation: bounds as CFDictionary) else { continue }
         if !rect.contains(point) { continue }
         let owner = info[kCGWindowOwnerPID as String] as? Int ?? -1
         return owner == Int(pid)
