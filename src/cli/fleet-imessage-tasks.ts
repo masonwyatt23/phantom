@@ -64,6 +64,9 @@ export async function cmdFleetImessageTasks(args: string[], deps: FleetImessageT
   const output = deps.output ?? console.log;
   const json = args.includes('--json');
   let parsed = false;
+  // Set only after `list --job <id> --json` passes validation, so a ledger read or
+  // report parse failure can still answer with the selected identity instead of a bare error.
+  let exactListJob: string | undefined;
   try {
     const { values, positionals, tokens } = parseArgs({ args, allowPositionals: true, strict: true, tokens: true, options: {
       json: { type: 'boolean' }, apply: { type: 'boolean' }, 'dry-run': { type: 'boolean' },
@@ -86,6 +89,7 @@ export async function cmdFleetImessageTasks(args: string[], deps: FleetImessageT
       : command === 'cancel' ? ['json', 'apply', 'dry-run', 'job'] : command === 'dispatch' ? ['json', 'apply', 'dry-run'] : command === 'list' ? ['json', 'job'] : ['json'];
     if (Object.keys(values).some(key => !allowed.includes(key)) || values.apply && values['dry-run']) throw new Error('Invalid options');
     if (command === 'list' && values.job !== undefined && !envelope.shape.jobId.safeParse(values.job).success) throw new Error('Invalid job');
+    exactListJob = command === 'list' && json ? values.job : undefined;
     let result: object;
     if (command === 'enqueue') {
       const { peer, kind, job: jobId, scope, repo, format, deadline } = values;
@@ -128,6 +132,16 @@ export async function cmdFleetImessageTasks(args: string[], deps: FleetImessageT
     return report.ok === false || ['error', 'unavailable', 'refused'].includes(report.state ?? '') ? 1 : 0;
   } catch {
     const error = parsed ? 'Teammate task operation unavailable; check configuration and task state.' : 'Invalid teammate task arguments.';
+    if (exactListJob !== undefined) {
+      // A failed ledger read is unavailable evidence, never a missing job: keep the
+      // validated selection machine-readable with matched:null and no task fields.
+      output(JSON.stringify({
+        selection: { jobId: exactListJob }, state: 'unavailable', matched: null, tasks: [], error,
+        coverage: 'local-evidence-only-peer-reported-results-unverified',
+        claimKeyEvidence: 'label-only-queue-binding-unverified',
+      }));
+      return 1;
+    }
     output(json ? JSON.stringify({ error, ...(parsed ? {} : { usage: USAGE }) }) : `${error}${parsed ? '' : `\n${USAGE}`}`);
     return parsed ? 1 : 2;
   }

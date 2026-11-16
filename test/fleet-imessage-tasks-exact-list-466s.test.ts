@@ -61,8 +61,12 @@ it('keeps a failed persisted read unavailable rather than reporting no match', a
   const list = vi.fn(() => listTeammateTasks({ runsDir })); const output = vi.fn();
   expect(await cmdFleetImessageTasks(['list', '--job', 'FAKE-466-B', '--json'], { list, config, output })).toBe(1);
   expect(list).toHaveBeenCalledOnce();
-  expect(JSON.parse(output.mock.calls[0][0])).toEqual({ error: 'Teammate task operation unavailable; check configuration and task state.' });
-  expect(output.mock.calls[0][0]).not.toContain('matched');
+  expect(JSON.parse(output.mock.calls[0][0])).toEqual({
+    selection: { jobId: 'FAKE-466-B' }, state: 'unavailable', matched: null, tasks: [],
+    error: 'Teammate task operation unavailable; check configuration and task state.',
+    coverage: 'local-evidence-only-peer-reported-results-unverified',
+    claimKeyEvidence: 'label-only-queue-binding-unverified',
+  });
 });
 it.each(['unavailable', 'error', 'refused'])('does not turn a %s report into a miss', async state => {
   const output = vi.fn();
