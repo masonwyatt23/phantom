@@ -13,10 +13,11 @@ import { ensurePrivateDirectory, writePrivateFileAtomic } from '../core/verse/pr
 import { defaultStewardPolicy, runSteward } from '../core/steward/disk.js';
 import { ingestMetrics, MetricsInputError } from '../core/fleet/metrics-ingest.js';
 
-const USAGE = `Usage: phm metrics <merges|summary|dashboard [--out file] [--prs file]|record <json>|recommend <taskType> <arm...>|idle --status <snapshot.json> --jobs <jobs.jsonl>|ingest --jobs <jobs.jsonl> --status <status.json>|levers [--window <7d|30d>]|leverage-mix [--prs <file>]> [--json]
+const USAGE = `Usage: phm metrics <merges|summary|dashboard [--out file] [--prs file]|record <json>|recommend <taskType> <arm...>|idle --status <snapshot.json> --jobs <jobs.jsonl>|ingest --jobs <jobs.jsonl> --status <status.json>|levers [--window <7d|30d>]|morning [--prs <file>]|leverage-mix [--prs <file>]> [--json]
 phm metrics merges [--json] reads the last 24 hourly buckets from the local jobs ledger.
 phm metrics ingest reads two explicit local files and prints deterministic lane and tier metrics as JSON.
 phm metrics levers ranks opportunity proxies from local activity and fleet rollups.
+phm metrics morning --json reports the seven last-24h morning measurements; unreadable sources are missing with a reason.
 phm metrics leverage-mix reports the 24-hour fleet merge mix; --prs enriches it with GitHub PR file paths.
 No network, writes, provider calls or operational routing changes. See docs/METRICS-ROUTER-FEED.md for schemas.
 Exit 0: report or help. Exit 2: invalid arguments or refused input.`;
@@ -54,6 +55,10 @@ export function cmdMetrics(argv: string[], io?: CliIo): number | Promise<number>
     return import('./metrics-levers.js').then(({ cmdMetricsLevers }) => cmdMetricsLevers(args, io));
   }
   io ??= { out: console.log, err: console.error };
+  if (argv[0] === 'morning' || (argv[0] === '--json' && argv[1] === 'morning')) {
+    const args = argv[0] === 'morning' ? argv : ['morning', '--json', ...argv.slice(2)];
+    return import('./metrics-morning.js').then(({ cmdMetricsMorning }) => cmdMetricsMorning(args, io!));
+  }
   if (argv.includes('--help') || argv.includes('-h')) { io.out(USAGE); return 0; }
   const json = argv.includes('--json');
   const [sub = 'summary', ...rest] = argv.filter((a) => a !== '--json');

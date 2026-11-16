@@ -150,6 +150,21 @@ empty and failed jobs, incomplete jobs, a reverted merge and unknown costs.
 malformed evidence, duplicate credit, path refusal, UTF-8, read-only behavior
 and CLI exits. Run tests with a temporary HOME as required by the repository.
 
+### Morning measurements
+
+`phm metrics morning --json --prs prs.json` reports seven last-24-hour
+measurements for the hourly routine: features added and cut, dead code
+deleted and net lines, Devin absorption, installed Phantom.app status, cost per
+merged PR, feedback loop minutes and node capacity. `prs.json` is a combined
+`gh pr list --repo ashlrai/<repo> --state all --json number,title,state,url,mergedAt,additions,deletions,headRefName,files`
+export. Other sources are read from `~/.ashlr-runs` (or `--runs-dir`):
+`queue/dispatch-events.log`, `queue/fleet-ledger.json` and `queue/ready.tsv`.
+A source that cannot be read is reported as `{"status":"missing","reason":...}`
+and never estimated. Cost per merged PR stays missing until a per-job cost
+reader exists. `--probe-url` makes one loopback GET to check an app view.
+`--merge-into report.json` backs the file up and replaces only the seven owned
+keys. Schema: `metrics.morning.v1`.
+
 ### Merge leverage mix
 
 `phm metrics leverage-mix --json` reports the last 24 hours of merged fleet
