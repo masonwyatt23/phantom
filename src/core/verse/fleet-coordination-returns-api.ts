@@ -24,10 +24,18 @@ export function createFleetCoordinationReturnsApi(deps: FleetCoordinationReturns
       sendJson(res, 405, { error: 'method not allowed' });
       return true;
     }
-    const at = now();
+    let clock = NaN;
+    try { clock = now().getTime(); } catch { /* Observation time remains unknown. */ }
     let board: FleetBoard | null;
     try { board = read(); } catch { board = null; }
-    const body = { ...projectCoordinationReturns(board, at.getTime()), authority: 'none' as const, generatedAt: at.toISOString() };
+    const projection = projectCoordinationReturns(board, clock);
+    const clockKnown = Number.isFinite(clock);
+    const body = {
+      ...projection,
+      ...(!clockKnown && projection.state === 'known'
+        ? { state: 'unknown' as const, reason: 'observation clock: unavailable' } : {}),
+      authority: 'none' as const, generatedAt: clockKnown ? new Date(clock).toISOString() : 'unknown',
+    };
     // Round-trip through JSON so each row's non-enumerable toJSON runs before any sanitizer.
     sendJson(res, 200, JSON.parse(JSON.stringify(body)));
     return true;
