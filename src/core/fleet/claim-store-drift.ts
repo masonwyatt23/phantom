@@ -125,9 +125,31 @@ function liveCoordination(row: CoordinationView): boolean {
   return row.live === true && row.origin === 'message' && text(row.key).startsWith(QUEUE_PREFIX);
 }
 
-function sourceOf(inspection: { source?: unknown; claims?: unknown } | undefined): ClaimDriftSource {
-  const source = inspection?.source;
-  return source === 'missing' || source === 'available' || source === 'unavailable' ? source : 'unavailable';
+const record = (value: unknown): value is Record<string, unknown> =>
+  value !== null && typeof value === 'object' && !Array.isArray(value);
+const label = (value: unknown): boolean => typeof value === 'string' && value.length > 0;
+const integer = (value: unknown): value is number =>
+  finite(value) && Number.isSafeInteger(value) && value >= 0;
+
+function validRow(row: unknown, bus: boolean): boolean {
+  if (!record(row) || !label(row.owner) || !integer(row.leaseUntil)) return false;
+  return bus
+    ? label(row.id) && integer(row.cursor) && row.cursor > 0 && integer(row.receivedAt) &&
+      row.leaseUntil >= row.receivedAt && (row.completedAt === null ||
+        (integer(row.completedAt) && row.completedAt >= row.receivedAt && row.completedAt < row.leaseUntil))
+    : ['message', 'resource', 'team', 'board', 'queue'].includes(text(row.origin)) &&
+      label(row.key) && label(row.sourceId) && typeof row.live === 'boolean';
+}
+
+function sourceOf(inspection: unknown, bus: boolean): ClaimDriftSource {
+  try {
+    if (!record(inspection) || !Array.isArray(inspection.claims)) return 'unavailable';
+    const { source, claims } = inspection;
+    if (source === 'missing') return claims.length === 0 ? 'missing' : 'unavailable';
+    // Array.from visits sparse slots too: corrupt rows cannot become a healthy empty table.
+    return source === 'available' && Array.from(claims).every(row => validRow(row, bus))
+      ? 'available' : 'unavailable';
+  } catch { return 'unavailable'; }
 }
 
 export function readClaimStoreDrift(opts: ClaimDriftDeps = {}): ClaimStoreDrift {
@@ -141,8 +163,8 @@ export function readClaimStoreDrift(opts: ClaimDriftDeps = {}): ClaimStoreDrift 
     coord = (opts.listCoord ?? listCoordination)(opts.root, now) ?? coord;
   } catch { /* same: a throwing reader degrades only its own source */ }
 
-  const busSource = sourceOf(bus);
-  const coordSource = sourceOf(coord);
+  const busSource = sourceOf(bus, true);
+  const coordSource = sourceOf(coord, false);
   const missing: string[] = [];
   if (busSource === 'unavailable') missing.push('bus');
   if (coordSource === 'unavailable') missing.push('coordination');
@@ -151,8 +173,8 @@ export function readClaimStoreDrift(opts: ClaimDriftDeps = {}): ClaimStoreDrift 
   const matchedRows: [BusWorkClaimView, CoordinationView][] = [];
   const busOnly: ClaimDriftRow[] = [];
   if (busSource === 'available' && coordSource !== 'unavailable') {
-    const coordination = (Array.isArray(coord.claims) ? coord.claims : []).filter(liveCoordination);
-    for (const row of (Array.isArray(bus.claims) ? bus.claims : []).filter(r => liveBus(r, now))) {
+    const coordination = coord.claims!.filter(liveCoordination);
+    for (const row of bus.claims.filter(r => liveBus(r, now))) {
       const sourceId = `${text(row.id)}:${row.cursor}:${row.receivedAt}`;
       const partner = coordination.find(c =>
         !matchedCoord.has(c) && c.sourceId === sourceId && c.key === `${QUEUE_PREFIX}${text(row.id)}`);
@@ -170,7 +192,7 @@ export function readClaimStoreDrift(opts: ClaimDriftDeps = {}): ClaimStoreDrift 
   }
   const coordOnly: ClaimDriftRow[] = [];
   if (coordSource === 'available' && busSource !== 'unavailable') {
-    for (const row of (Array.isArray(coord.claims) ? coord.claims : []).filter(liveCoordination)) {
+    for (const row of coord.claims!.filter(liveCoordination)) {
       if (!matchedCoord.has(row)) coordOnly.push(coordRow(row));
     }
   }
