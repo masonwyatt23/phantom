@@ -7,10 +7,16 @@
 The core `agents/acp-client.ts` runner supports generic ACP v1 agents over
 newline-delimited JSON-RPC stdio, independent of Verse transcripts. Callers
 must qualify an explicit model before any process starts; there is no paid
-fallback. Model configuration, when offered, must include that exact id.
+fallback. Generic model configuration requires an exact offered id unless the
+caller supplies a model-step planner. Planning is bounded to four configuration
+sets and refuses unplannable targets before prompting.
 The `devin/acp-seat.ts` wrapper invokes the CLI's ACP subcommand with the exact
 model flag and accepts only free, non-lightning ids from a fresh native model
-listing (`source: cli`), never cached or fallback catalogs or aliases.
+listing (`source: cli`), never cached or fallback catalogs or aliases. The listing
+timestamp must be parseable, not in the future, and no older than six hours.
+The wrapper plans the CLI's family-default model, thought level and speed selects
+to reach the requested id (for example SWE-2 Medium). Without model controls it
+retains the launch-time model flag; it never substitutes another model.
 
 Permissions default to read-only (read/search/fetch/think only); other tool
 kinds are rejected. Unsupported client requests, including filesystem access,

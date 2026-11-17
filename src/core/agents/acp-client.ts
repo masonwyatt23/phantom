@@ -1,8 +1,11 @@
 import { spawn } from 'node:child_process';
 
+export type AcpModelStep = { kind: 'set'; configId: string; value: string }
+  | { kind: 'done' } | { kind: 'unplannable'; reason: string };
 export interface AcpSeatOptions {
   command: string; args: string[]; cwd: string; prompt: string; model: string;
   qualifyModel: (model: string) => boolean | Promise<boolean>;
+  planModelStep?: (target: string, configOptions: unknown) => AcpModelStep;
   permission?: 'read-only' | 'allow'; timeoutMs: number; signal?: AbortSignal;
 }
 export interface AcpSeatDeps { spawn?: typeof spawn; env?: NodeJS.ProcessEnv }
@@ -98,7 +101,16 @@ export async function runAcpSeatTurn(opts: AcpSeatOptions, deps: AcpSeatDeps = {
         sessionId = session.sessionId;
         const config = (Array.isArray(session.configOptions) ? session.configOptions : []).map(record)
           .find((option) => option.category === 'model' || option.id === 'model');
-        if (config) {
+        if (config && opts.planModelStep) {
+          let configOptions = session.configOptions;
+          for (let steps = 0; ; steps++) {
+            const step = opts.planModelStep(opts.model, configOptions);
+            if (step.kind === 'done') break;
+            if (step.kind === 'unplannable' || steps >= 4) { finish('model-unavailable'); return; }
+            const answer = await request('session/set_config_option', { sessionId, configId: step.configId, value: step.value });
+            configOptions = answer.configOptions;
+          }
+        } else if (config) {
           const offered = Array.isArray(config.options) ? config.options.map(record) : [];
           if (!offered.some((option) => option.value === opts.model)) { finish('model-unavailable'); return; }
           if (config.currentValue !== opts.model) {
