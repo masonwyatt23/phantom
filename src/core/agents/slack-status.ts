@@ -11,7 +11,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { ashlrHome } from '../cloud/store.js';
 import { formatAsOf } from '../comms/as-of-label.js';
-import { listWorkBoard, type WorkBoardItem } from '../comms/work-board.js';
+import { listWorkBoard, type WorkBoardItem, type WorkBoardResult } from '../comms/work-board.js';
 import { readPrivateFileCapped } from '../verse/preferences.js';
 import { scrubSecrets } from '../util/scrub.js';
 import {
@@ -106,6 +106,8 @@ export interface SlackWorkStatus {
   /** When asOf was read; absent means staleness cannot be proven. */
   readAt?: string;
   inbox: 'ok' | 'unavailable';
+  /** Table observation only, independent of inbox access; absent in legacy fixtures. */
+  claims?: WorkBoardResult['claims'];
   truncated: boolean;
   items: Array<Pick<WorkBoardItem, 'id' | 'channelRef' | 'state' | 'owner' | 'claimReceipt'> & {
     pr: number | null; head: string | null; dependency: string | null;
@@ -124,7 +126,7 @@ export function readSlackWorkStatus(options: { runsDir?: string; busRoot?: strin
     if (typeof tick === 'string' && /^\d{4}-\d{2}-\d{2}T/.test(tick) && Number.isFinite(Date.parse(tick)) && Date.parse(tick) <= now.getTime()) asOf = new Date(tick).toISOString();
   } catch { /* Missing, malformed or future fleet time stays unknown. */ }
   const board = listWorkBoard({ root: options.busRoot ?? join(ashlrHome(), 'fleet'), now: now.getTime(), limit: 100, channelRef: options.channelRef });
-  return { asOf, readAt: now.toISOString(), inbox: board.inbox, truncated: board.truncated, items: board.items
+  return { asOf, readAt: now.toISOString(), inbox: board.inbox, claims: board.claims, truncated: board.truncated, items: board.items
     .filter(item => item.channel === 'slack' && item.channelRef !== null && parseSlackThreadRef(item.channelRef))
     .map(item => ({ id: item.id, channelRef: item.channelRef, state: item.state,
       owner: safeWorkText(item.owner), claimReceipt: safeWorkText(item.claimReceipt),
@@ -155,7 +157,12 @@ export function slackWorkStatusLine(work: SlackWorkStatus, body: Record<string, 
   const detail = item?.state === 'VERIFIED' ? `PR ${item.pr ?? 'unknown'}; head ${item.head ?? 'unknown'}`
     : item?.state === 'BLOCKED' ? `dependency ${item.dependency ?? 'unknown'}`
       : `owner ${item?.owner ?? 'unknown'}; claim ${item?.claimReceipt ?? 'unknown'}`;
-  return `${item?.state ?? 'UNKNOWN'}; ${detail}; ${slackFleetAsOf(work)}`;
+  const claims = work.claims === 'available' ? 'claims read available'
+    : work.claims === 'missing' ? 'claims read missing (ownership table absent)'
+      : work.claims === 'unavailable' ? 'claims read unavailable (ownership inspection failed)'
+        : 'claims read unknown';
+  const inbox = work.inbox === 'unavailable' ? '; inbox read unavailable' : '';
+  return `${item?.state ?? 'UNKNOWN'}; ${detail}; ${claims}${inbox}; ${slackFleetAsOf(work)}`;
 }
 
 function slackIdentityCount(config: AgentNetworkConfig): number {
