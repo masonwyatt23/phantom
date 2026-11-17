@@ -2,6 +2,22 @@
 
 # Devin in Phantom
 
+## Headless ACP seat client
+
+The core `agents/acp-client.ts` runner supports generic ACP v1 agents over
+newline-delimited JSON-RPC stdio, independent of Verse transcripts. Callers
+must qualify an explicit model before any process starts; there is no paid
+fallback. Model configuration, when offered, must include that exact id.
+The `devin/acp-seat.ts` wrapper invokes the CLI's ACP subcommand with the exact
+model flag and accepts only free, non-lightning ids from a fresh native model
+listing (`source: cli`), never cached or fallback catalogs or aliases.
+
+Permissions default to read-only (read/search/fetch/think only); other tool
+kinds are rejected. Unsupported client requests, including filesystem access,
+receive method-not-found. Stderr is discarded, output buffers are bounded,
+and timeout or abort cancels the session and kills the child. This is a core
+API, not a change to the existing fleet lane or an authorization to spend.
+
 Phantom works with **Devin** (Cognition's hosted coding agent) in three places:
 
 - **Two chat seats.** **Devin (cloud)** runs a Devin session per chat; **Devin

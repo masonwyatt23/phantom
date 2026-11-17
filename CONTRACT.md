@@ -21,6 +21,24 @@ inline).
 The CLI ships as `phm` with the compatible `ashlr` alias (both run `bin/ashlr`).
 The full, current command inventory is `phm help --all`.
 
+## Headless ACP seats
+
+`agents/acp-client.ts` exports `runAcpSeatTurn(opts: AcpSeatOptions,
+deps?: AcpSeatDeps): Promise<AcpSeatResult>`. Options provide command, args,
+cwd, prompt, exact model, async-capable qualifyModel, timeoutMs, optional signal
+and permission (`read-only` by default, or `allow`). Dependencies inject spawn
+and env. Results contain ok, code, text and optional message, sessionId and
+stopReason. Qualification fails closed before spawning, with no paid fallback.
+ACP config model selection is exact; unavailable models fail before prompting.
+Input lines and collected text are capped at 1 MiB each; stderr is discarded.
+Timeout and abort notify session/cancel and terminate the child.
+
+`devin/acp-seat.ts` exports `devinAcpSeatArgs(model): string[]`,
+`devinQualifiedFreeModel(catalog: DevinModelCatalog, model: string): boolean`
+and `runDevinAcpSeat(opts, deps?): Promise<AcpSeatResult>`. Wrapper options replace
+command/args/qualifyModel with cliPath and catalog. Only exact free ids from a
+native (`cli`) catalog qualify; cache, fallback, aliases and lightning do not.
+
 ## Bounded peer work dispatch (RQ-AGENTNET-DISPATCH-1)
 
 `agents/bus-v2-schema.ts` retains `agent-bus.v2` and adds optional
