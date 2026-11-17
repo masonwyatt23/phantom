@@ -201,6 +201,7 @@ export const FLEET_SUBCOMMAND_LOADERS: Record<string, () => Promise<Record<strin
   'intent-read': () => import('./fleet-intent-read.js'),
   'intent-summary': () => import('./fleet-intent-summary.js'),
   'intent-sweep': () => import('./fleet-intent-sweep.js'),
+  'janitor': () => import('./fleet-janitor.js'),
   'job-batch-audit': () => import('./fleet-job-batch-audit.js'),
   'job-class-share': () => import('./fleet-job-class-share.js'),
   'job-compare': () => import('./fleet-job-compare.js'),

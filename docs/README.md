@@ -132,6 +132,7 @@ Grok Bot routine integration: [Grok Bot resource lane](https://github.com/ashlra
 | Queue Mac bridge builds and tests within a shared memory budget | [Memory admission — source guide](https://github.com/ashlrai/phantom/blob/master/scripts/mac-bridge/MEMORY.md) |
 | Bound Mac bridge disk growth and clean published worktrees | [Mac bridge disk lifecycle](https://github.com/ashlrai/phantom/blob/master/docs/BRIDGE-WORKTREES.md) |
 | Preview or remove finished job worktrees | [Worktree prune](https://github.com/ashlrai/phantom/blob/master/docs/WORKTREE-PRUNE.md) |
+| Run deterministic fleet recovery with per-action audit evidence | [Fleet janitor](https://github.com/ashlrai/phantom/blob/master/docs/FLEET-JANITOR.md) |
 | Reclaim rebuildable disk bytes by class, or install the daily maintenance job | [Standing disk maintenance](DISK-MAINT.md) |
 | Act on Eng Ops incident files for a stuck release, a launchd loop, a stalled lane, or outside load | [Autofix](https://github.com/ashlrai/phantom/blob/master/docs/AUTOFIX.md) |
 | Build release evidence and distinguish distribution from activation | [Releasing — source guide](https://github.com/ashlrai/phantom/blob/master/docs/RELEASING.md) |
