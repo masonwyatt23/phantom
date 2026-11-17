@@ -32,6 +32,17 @@ it('escalates only bottleneck implementation onto a different frontier lane', ()
   expect(decidePairing([lanes[0]], now, { bottleneck: 'implement' }).sidekick).toBeNull();
 });
 
+it('excludes exhausted lanes unless positive credits remain and does not pressure margin-only lanes', () => {
+  const exhausted = { ...lane('empty'), pool: { ...lane('empty').pool, remainingPercent: 0 } };
+  for (const creditBalance of [undefined, null, 0]) {
+    expect(decidePairing([{ ...exhausted, pool: { ...exhausted.pool, creditBalance } }], now).lead).toBeNull();
+  }
+  expect(decidePairing([{ ...exhausted, pool: { ...exhausted.pool, creditBalance: 1 } }], now).lead)
+    .toMatchObject({ lane: 'empty', reason_codes: ['credits-only'] });
+  expect(decidePairing([{ ...lane('margin'), pool: { ...lane('margin').pool, remainingPercent: 2 } }], now).lead)
+    .toMatchObject({ pacePerHour: 0, reason_codes: ['no-capacity-evidence'] });
+});
+
 it('ranks weekly before credits, then unknown evidence by lane id; drops invalid pools', () => {
   const credits = { ...lane('credits'), pool: { pool: 'credits', resetAt: null, remainingPercent: null, creditBalance: 100 } };
   const unknown = (id: string) => ({ ...lane(id), pool: { pool: id, resetAt: null, remainingPercent: null } });

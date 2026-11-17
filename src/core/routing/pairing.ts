@@ -23,7 +23,8 @@ export interface Assignment {
 
 export function decidePairing(lanes: readonly PairingLane[], nowMs: number,
   { bottleneck = null }: { bottleneck?: DelegationStage | null } = {}) {
-  const eligible = lanes.filter(row => row.available && validResetCalendarPool(row.pool));
+  const eligible = lanes.filter(row => row.available && validResetCalendarPool(row.pool) &&
+    (row.pool.remainingPercent !== 0 || (row.pool.creditBalance ?? 0) > 0));
   const ranked = (cls: DelegationLaneClass) => {
     const rows = eligible.filter(row => row.laneClass === cls).sort((a, b) => a.lane < b.lane ? -1 : a.lane > b.lane ? 1 : 0);
     const order = resetLaneOrder(rows.map(row => ({ ...row.pool, pool: row.lane })), nowMs);
@@ -42,7 +43,7 @@ export function decidePairing(lanes: readonly PairingLane[], nowMs: number,
     return { lane: row.lane, laneClass: row.laneClass, stages,
       resetAt: evidence?.resetAt ?? null, remainingPercent: evidence?.remainingPercent ?? null,
       pacePerHour: evidence?.pacePerHour ?? null,
-      reason_codes: [evidence?.kind === 'credits' ? 'credits-only' : evidence?.pacePerHour != null ? 'reset-pressure' : 'no-capacity-evidence'] };
+      reason_codes: [evidence?.kind === 'credits' ? 'credits-only' : (evidence?.pacePerHour ?? 0) > 0 ? 'reset-pressure' : 'no-capacity-evidence'] };
   };
   const frontier = ranked(STAGE_LANE_CLASS.plan);
   const lead = assign(frontier[0], ['plan', 'verify']);

@@ -189,3 +189,4 @@ then credits, then lanes without spendable evidence by id. Reasons are closed:
 bottleneck permits a second frontier lane to implement; route explain declares
 no bottleneck. Assignments include reset, remaining allowance and burn pace;
 unknown evidence is null, never invented capacity.
+Zero remaining allowance excludes a lane unless positive credits remain; zero burn pace is labeled `no-capacity-evidence`, not `reset-pressure`.
