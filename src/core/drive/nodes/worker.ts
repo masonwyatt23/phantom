@@ -7,7 +7,8 @@ import type { JobClaim } from './index.js';
 import { probeLocalModelCaps, type LocalLaneProbeDeps } from './local-model-caps.js';
 import { callPool, type PoolConfig } from './pool-host.js';
 import { isHostStats, validId } from './state.js';
-import { readNodeCapacity } from './capacity.js';
+import { nodeRamSlots, readNodeCapacity, type NodeCapacity } from './capacity.js';
+import { hostSlots, type HostSlotLease } from './host-slots.js';
 import { localPhmVersion, versionCap } from './phm-version.js';
 import { lightRecipe, restockLight } from './light.js';
 import { probeLocalAuth } from './auth-probe.js';
@@ -65,21 +66,33 @@ export async function runNodeWorker(config: PoolConfig, runner: string, light = 
   const attempt = async (): Promise<Record<string, unknown>> => {
     const admission = capacityNow();
     if (admission.held) return { held: admission.held };
-    callPool(config, 'beat', [...identity, ...telemetry(), '--usage', usage(), '--slots', String(admission.slots), ...(auth ? ['--auth', auth] : [])]);
+    let hostLease: HostSlotLease | null;
+    try { hostLease = hostSlots().acquire(nodeRamSlots(admission.ramBytes)); }
+    catch { return { slots: 0, held: 'host-slots-unmeasured' }; }
+    if (!hostLease) return { slots: 0, held: 'host-slots-exhausted' };
+    try { return await runAttempt(hostLease, admission); }
+    finally { hostLease.release(); }
+  };
+  const runAttempt = async (hostLease: HostSlotLease, admission: NodeCapacity): Promise<Record<string, unknown>> => {
+    // Router slots include this session's active claims, not just the host's free slots.
+    callPool(config, 'beat', [...identity, ...telemetry(), '--usage', usage(), '--slots', String(Math.min(capacity.slots, active + admission.slots)), ...(auth ? ['--auth', auth] : [])]);
     const pulled = callPool(config, 'pull', identity);
     if (pulled.demoted || !pulled.result['pulled']) return { pulled: false };
     const claim = pulled.result['claim'] as JobClaim;
     const job = pulled.result['job'] as JobView;
+    const jobCapacity = () => readNodeCapacity(light, { ...(job.pack ? { pack: job.pack } : {}), lease: hostLease });
     if (!validId(job?.id) || !Array.isArray(job.requires) || !job.requires.some(c => lanes.includes(c)) ||
-        job.requires.some(c => !lanes.includes(c)) || job.secrets.length || (light && !lightRecipe(job)) || nodeStopped() || capacityNow().held) return { held: 'unsupported-job' };
+        job.requires.some(c => !lanes.includes(c)) || job.secrets.length || (light && !lightRecipe(job)) || nodeStopped()) return { held: 'unsupported-job' };
+    const packCapacity = jobCapacity();
+    if (packCapacity.held) return { held: packCapacity.held, capacity: packCapacity };
     const lease = [...identity, '--job', claim.jobId, '--token', String(claim.token), '--leader-token', String(claim.leaderToken)];
     // Check immediately before spawn as well as throughout execution.
     const renewed = callPool(config, 'renew', lease);
-    if (!renewed.result['expiresAt'] || renewed.demoted || capacityNow().held) return { held: 'lease-lost' };
-    active++;
+    if (!renewed.result['expiresAt'] || renewed.demoted || jobCapacity().held) return { held: 'lease-lost' };
     const resultRef = await new Promise<string | null>(resolve => {
       const child = spawn(runner, ['run'], { shell: false, detached: true,
         env: { PATH: process.env['PATH'], HOME: homedir() }, stdio: ['pipe', 'pipe', 'ignore'] });
+      active++;
       let fenced = false;
       const output: Buffer[] = [];
       let bytes = 0;
@@ -99,8 +112,10 @@ export async function runNodeWorker(config: PoolConfig, runner: string, light = 
       process.once('SIGTERM', stop);
       const timer = setInterval(() => {
         try {
-          if (nodeStopped() || capacityNow().held) return stop();
-          callPool(config, 'beat', [...identity, ...telemetry(), '--usage', usage(), '--slots', String(capacityNow().slots)]);
+          const currentCapacity = jobCapacity();
+          if (nodeStopped() || currentCapacity.held) return stop();
+          const slots = Math.min(capacity.slots, active + currentCapacity.slots - 1); // owned lease is counted in both
+          callPool(config, 'beat', [...identity, ...telemetry(), '--usage', usage(), '--slots', String(slots)]);
           const current = callPool(config, 'renew', lease);
           if (current.demoted || !current.result['expiresAt']) stop();
         } catch { stop(); }
@@ -116,7 +131,8 @@ export async function runNodeWorker(config: PoolConfig, runner: string, light = 
           resolve(code === 0 && !fenced && validId(result.resultRef) ? result.resultRef : null);
         } catch { resolve(null); }
       });
-      child.stdin.end(JSON.stringify({ protocol: 'phm-node-worker/v1', job: pulled.result['job'], claim }));
+      try { child.stdin.end(JSON.stringify({ protocol: 'phm-node-worker/v1', job: pulled.result['job'], claim })); }
+      catch { stop(); } // Retain the host slot until close even if writing stdin fails synchronously.
     });
     active--;
     if (!resultRef) return { completed: false, held: 'runner-stopped' };
