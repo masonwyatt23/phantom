@@ -345,6 +345,7 @@ Every command, grouped by topic.
     spend [--json]                                                                              Is every pool spent before it resets or expires: used, burn, projected unused and one status word per pool, worst waste first.
     throughput [--hours 24] [--by lane|repo|tier] [--text]                                      Jobs launched, PRs published and merged, empty jobs and median publish-to-merge time per hour. JSON by default.
     jobs yield [--since 24h] [--stop-list] [--json]                                             Which kinds of jobs are worth launching: keep, watch or stop. Use --stop-list for only the kinds to stop, one per line; --json keeps the full report.
+    self drift [--json] [--repo <phantom clone>]                                                Is the installed phm behind the latest release and master, and which merged fleet features are not live in it yet. Unreadable facts print as unknown.
     recut check [--json] [--ref <branch>] <area-or-job-id>                                      Should the next recut or red-fix job launch? Exit 0 launch, 1 skip; the reason is one plain line.
     jobs empty [--since 24h] [--family F] [--json]                                              Explain empty jobs with family and lane suggestions.
     radar list|run|diff [--json]                                                                Public docs observation: list sources, run independent fetches, and diff local snapshots. HTTPS GET only, no credentials. See docs/RADAR.md.
