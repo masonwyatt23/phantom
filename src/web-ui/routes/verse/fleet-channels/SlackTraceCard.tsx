@@ -5,6 +5,7 @@ import { workBoardQuery } from '../fleet-board/work-board-section.js';
 import { joinSlackWork, type SlackWorkCell } from './slack-trace-work-join.js';
 import { slackTraceQuery } from './slack-trace-query.js';
 import type { SlackTraceView } from './slack-trace-model.js';
+import { SlackTraceLookup } from './SlackTraceLookup.js';
 import styles from './fleet-channels.module.css';
 
 /** Read-only: each recent Slack request's ingress receipt and reply outcome. */
@@ -19,7 +20,10 @@ export function SlackTraceCard({ visible, nowMs }: { visible: boolean; nowMs: nu
   if (read.data === undefined) {
     return <p className={styles.message} role="status">{read.status === 'error' ? 'Slack request trace is unavailable.' : 'Reading Slack request trace…'}</p>;
   }
-  return <SlackTraceBody view={read.data} nowMs={nowMs} board={board.data ?? null} />;
+  return <>
+    <SlackTraceBody view={read.data} nowMs={nowMs} board={board.data ?? null} />
+    <SlackTraceLookup />
+  </>;
 }
 
 const OWNED = ['ASSIGNED', 'RUNNING', 'VERIFIED'];
