@@ -26,7 +26,7 @@ import { readSlackSendReceipts, type SlackSendReceiptRead } from '../agents/slac
 import { parseNoticeThreadRef } from '../../cli/fleet-claim-notices.js';
 import { readFleetBoard, type FleetBoard } from './coordination.js';
 import { claimNoticeDir, claimNoticeFileDeps, claimNoticePaths, readClaimNoticeSentRows,
-  readClaimThreadBindings, runClaimNoticePass, type ClaimNoticeSendDeps } from './claim-notice-send.js';
+  readClaimThreadBindingsState, runClaimNoticePass, type ClaimNoticeSendDeps } from './claim-notice-send.js';
 
 export const CLAIM_NOTICE_VIEW_ROWS = 20;
 export const CLAIM_NOTICE_VIEW_TEXT = 300;
@@ -69,7 +69,7 @@ export interface ClaimNoticeView {
   /** Whether `pending` was actually observed; independent of `delivery` receipts. */
   pendingObservation: ClaimNoticePendingObservation;
   /** Live claims with no binding: runClaimNoticePass drops every notice for them.
-   * 'unknown' whenever the board could not be read as known; never an empty-list guess.
+   * 'unknown' whenever the board or bindings cannot be read; never an empty-list guess.
    * Task text is deliberately not carried. */
   unbound: { state: 'known' | 'unknown'; total: number;
     rows: Array<{ claimId: string; repo: string; agent: string; claimedAt: number }> };
@@ -137,10 +137,10 @@ export async function readClaimNoticeView(opts: ClaimNoticeViewOpts = {}): Promi
   const paths = claimNoticePaths(root);
   const rows = readClaimNoticeSentRows(paths.sent);
   if (rows === null) return empty('unreadable');
-  const bindings = readClaimThreadBindings(paths.bindings);
+  const bindings = readClaimThreadBindingsState(paths.bindings);
   const classify = (claimId: string, repo: string | undefined, at: number, dedupeKey: string): ClaimNoticeDeliveryWord => {
     // A non-ok store can hide receipts; only a healthy read may say "none matched".
-    if (sendStore.state !== 'ok') return 'unknown';
+    if (sendStore.state !== 'ok' || bindings === null) return 'unknown';
     const threads = new Set(bindings
       .filter(b => b.claimId === claimId && (repo === undefined || b.repo === repo))
       .map(b => b.threadKey));
@@ -178,7 +178,7 @@ export async function readClaimNoticeView(opts: ClaimNoticeViewOpts = {}): Promi
     return boardRead.board;
   };
   let unbound: ClaimNoticeView['unbound'] = { state: 'unknown', total: 0, rows: [] };
-  if ('board' in boardRead && boardRead.board.state === 'known') {
+  if (bindings !== null && 'board' in boardRead && boardRead.board.state === 'known') {
     const bound = new Set(bindings.map(b => JSON.stringify([b.repo, b.claimId])));
     const live = boardRead.board.claims
       .filter(c => c.expiresAt > collectedAtMs && !bound.has(JSON.stringify([c.repo, c.id])))
@@ -208,6 +208,6 @@ export async function readClaimNoticeView(opts: ClaimNoticeViewOpts = {}): Promi
     if ('error' in boardRead) pendingObservation = { state: 'unknown', reason: 'board-unavailable' };
   }
 
-  return { ...base, source: 'ok', bindings: bindings.length,
+  return { ...base, source: 'ok', bindings: bindings?.length ?? 0,
     sent: { total: rows.length, recent }, delivery: summary(recent), pending, pendingObservation, unbound, slackConfigured };
 }
