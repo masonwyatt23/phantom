@@ -168,10 +168,15 @@ hourly cap (default ten). Rerun attempt rows carry the failing test id (bounded
 to 400 chars). `src/core/fleet/ci-flakes.ts` exports `recurringFlakes(rows, opts?)`,
 `flakeJobId(repo, test)` and `enqueueFlakeFixes(flakes, absoluteQueuePath)`:
 a test probable-flaking on at least three distinct heads within seven days
-becomes one deduplicated `RQ-CIFLAKE-*` work-tier queue row, capped at ten new
-rows per run. Shared-baseline and recurring-flake queueing both require
-effective authority and inactive KILL. Cancellation returns/persists
-`status: 'aborted'`.
+becomes one `RQ-CIFLAKE-*` work-tier queue row per (repository, test), capped
+at ten new rows per run. `src/core/fleet/ci-fix-generations.ts` exports
+`nextFixGeneration(queueText, baseJobId, opts?)` and `MAX_FIX_GENERATIONS`:
+queue deduplication is generation-aware — open rows suppress queueing,
+dropped/retired rows and unparsed mentions stay suppressed, and a family
+whose generations all reached DONE re-queues as the next `-G<n>` id (cap
+three) while fresh evidence persists. Shared-baseline and recurring-flake
+queueing both require effective authority and inactive KILL. Cancellation
+returns/persists `status: 'aborted'`.
 `ciRerunPaths()` resolves journal/status files under the ASHLR state root;
 `readCiReruns(path?, nowMs?)` returns bounded entries, recent entries, counts,
 lastHour attempts and recurringFlakes; `readCiRerunStatus(path?)` returns the
@@ -185,7 +190,10 @@ recurringFlakes without mutation.
 `src/core/fleet/ci-baseline.ts` exports `analyzeCiBaseline(repo, gh?)`, a
 read-only version 1 evidence report, and `parseBaselineFailures(log)` for capped,
 scrubbed Vitest failure identities and summaries. `enqueueBaselineFixes(report,
-absoluteQueuePath)` explicitly writes deduplicated work-tier master-fix rows.
+absoluteQueuePath)` explicitly writes work-tier master-fix rows deduplicated
+by queue state via `nextFixGeneration`: a failure whose prior fix generations
+all reached DONE re-queues as the next `RQ-CIBASE-*-G<n>` id while the
+failure is still observed on current evidence.
 `applyBaselineUpdates(report, gh?)` explicitly applies expected-head guarded
 updates only after current master test-pass and merged-fix ancestry evidence.
 Unknown evidence never authorizes mutation. See [CI baseline](docs/CI-BASELINE.md).
@@ -1601,7 +1609,13 @@ with a `reason`); they never throw for bad input or storage faults.
 `src/core/agents/bus-unified.ts`: `sendDirectMessage`, `postChannelMessage`,
 `sendHandoff`, `sendWakeRequest`, `announceWork`, `updateWorkStatus` (all `Promise<UnifiedSendResult>`: `posted|duplicate` with `id`,
 `cursor`, `to`, `wake`, or a refusal with `reason`), `readAgentInbox(ref, {after, limit}, options?)`,
-`readAgentWakes(ref, sinceAt, options?)`, `shouldWake(priority, requested, handoff?)`
+`readAgentWakes(ref, sinceAt, options?)`, `listBusChannels(agent, options?)`
+(the registry channels name-sorted with `createdBy`, `createdAt` and member
+handles in join order — all of them, or only those one resolved identity
+belongs to; `source` is `missing` for a verified-empty registry or
+`available`, `agent` the resolved handle or null, and an unknown ref or
+unreadable registry answers `unknown-agent`/`unavailable`, never an empty
+list), `shouldWake(priority, requested, handoff?)`
 and `busBodySummary(body)` — a pure, secret-scrubbed read of a bus body for
 inbox surfaces (`note`/`context`/`worker-handoff` return their message text,
 possibly multi-line; every other recognized kind — the v2 work/wake bodies

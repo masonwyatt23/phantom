@@ -11,17 +11,24 @@
  *               mirrored bus envelope `imessage-teammate-<rowid>`.
  *   drafts      outbound email drafts still pending approval
  *               (`phm drafts list --status pending`), act: show/approve/reject.
- *   bus         live `kind:'work'` envelopes in the local bus inbox with no
- *               live claim row — an expired lease is free again and counts as
- *               unclaimed — act: `phm fleet bus-claim acquire`. The same
+ *   bus         live claimable-work envelopes in the local bus inbox — the
+ *               `isClaimableWork` contract the claim path itself uses:
+ *               legacy `{kind:'work'}` mail and protocol `task` bodies, never
+ *               a `kind:'work'` body a non-task protocol masks — with no live
+ *               claim row; an expired lease is free again and counts as
+ *               unclaimed — act: `phm fleet bus-claim acquire`. A live
+ *               coordination-table row on the envelope's `queue:<id>` key
+ *               (resource, lane or board claims share the one table the
+ *               message-id claim consults) also counts as held. The same
  *               section also lists open agent-bus v2 work-feed jobs (queued or
  *               rescheduled `work.post` announcements with at least one claim
  *               key not fully held), read through the same projection
  *               `phm agents bus work feed` serves — act:
- *               `phm agents bus claim acquire`. When the claims table itself
- *               cannot be read the section reports 'degraded' and still lists
- *               candidates rather than hiding possibly unclaimed work; a
- *               refused or unreadable feed degrades it the same way.
+ *               `phm agents bus claim acquire`. When the claims or
+ *               coordination table cannot be read the section reports
+ *               'degraded' and still lists candidates rather than hiding
+ *               possibly unclaimed work; a refused or unreadable feed degrades
+ *               it the same way.
  *   gmail       one item per inbox in the saved Gmail archive plan whose unread
  *               count is over its target (`phm fleet gmail-archive-plan`). A
  *               read of the saved plan only: no mail is read, moved or deleted.
@@ -43,11 +50,12 @@ import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { readBusWorkFeed, type BusWorkFeedReadResult } from '../agents/bus-work-feed-read.js';
+import { coordinationRowBlocks, listCoordination } from '../agents/claim-store.js';
 import type { WorkJob } from '../agents/bus-v2-schema.js';
 import { listDrafts, type Draft } from '../cos/drafts.js';
 import { compareRanked, needsYouPriorityHeuristic, type AttentionItem, type NeedsYouPriority, type RankedAttentionItem } from '../decide/needs-you.js';
 import { BUS_INBOX_MAX_BYTES, BUS_INBOX_MAX_MESSAGES, BUS_INBOX_MAX_READ, inspectBusInbox, listBusInboxAfter, type BusInboxInspection, type BusInboxOptions, type BusInboxReceipt } from '../fleet/bus-inbox.js';
-import type { BusPriority } from '../fleet/bus-envelope.js';
+import { isClaimableWork, type BusPriority } from '../fleet/bus-envelope.js';
 import { inspectBusWorkClaims, type BusWorkClaimsInspection } from '../fleet/bus-work-claims.js';
 import { readNeedsMason, type NeedsMasonItem, type NeedsMasonReadResult } from '../fleet/needs-mason-resolve.js';
 import { gmailArchivePlanLatestPath, readGmailArchivePlanLatest } from './gmail-archive-plan-latest.js';
@@ -112,6 +120,7 @@ export interface UnifiedInboxOptions {
   listBus?: typeof listBusInboxAfter;
   inspectBus?: typeof inspectBusInbox;
   readClaims?: (root?: string) => BusWorkClaimsInspection;
+  readCoordination?: typeof listCoordination;
   readFeed?: typeof readBusWorkFeed;
   readGmailPlans?: typeof readGmailArchivePlanLatest;
   readLinkedIn?: typeof readLinkedInDrop;
@@ -181,10 +190,26 @@ async function draftItems(list: typeof listDrafts, runsDir: string | undefined):
   return { report: { state, pending: items.length }, items };
 }
 
-/** Live envelopes whose body marks them claimable work (the work loop's contract). */
+/** Live envelopes whose body the claim path would take: the shared `isClaimableWork` contract. */
 function isWorkReceipt(receipt: BusInboxReceipt): boolean {
-  const body = receipt.envelope.body;
-  return body !== null && typeof body === 'object' && !Array.isArray(body) && body.kind === 'work';
+  return isClaimableWork(receipt.envelope.body);
+}
+
+/**
+ * Title fallback for a claimable body with no usable `text`: protocol-v1 task
+ * envelopes compose `protocol task <topic>: <payload_ref>` — the same read
+ * `busBodySummary` gives transport bodies — so a task is identifiable in the
+ * list instead of collapsing to `work <from> → <to>`.
+ */
+function protocolTaskTitle(record: Record<string, unknown>): string | null {
+  const proto = record['protocol'];
+  if (proto === null || typeof proto !== 'object' || Array.isArray(proto)) return null;
+  const p = proto as Record<string, unknown>;
+  if (p['kind'] !== 'task') return null;
+  const head = ['protocol', 'task', typeof p['topic'] === 'string' && p['topic'] !== '' ? p['topic'] : null]
+    .filter((value): value is string => value !== null).join(' ');
+  const ref = typeof p['payload_ref'] === 'string' && p['payload_ref'] !== '' ? p['payload_ref'] : null;
+  return ref === null ? head : `${head}: ${ref}`;
 }
 
 /** Announcement metadata for a v2 work job, read off its live `work.post` receipt. */
@@ -264,14 +289,22 @@ function busItems(options: UnifiedInboxOptions): { report: UnifiedInboxSourceRep
 
   const now = (options.now ?? Date.now)();
   const claims = (options.readClaims ?? inspectBusWorkClaims)(options.busRoot);
-  const taken = (receipt: BusInboxReceipt): boolean => claims.claims.some(row =>
-    row.id === receipt.envelope.id && row.cursor === receipt.cursor && row.receivedAt === receipt.receivedAt &&
-    (row.completedAt !== null || row.leaseUntil > now));
+  const coordination = (options.readCoordination ?? listCoordination)(options.busRoot, now);
+  // A message-id claim lands in the same coordination table under
+  // `queue:<envelope id>`, so a live row there — resource, lane or board —
+  // means the canonical acquire would conflict: the work is held, not free.
+  const coordinationHolds = coordination.source === 'available'
+    ? coordination.claims.filter(row => row.live) : [];
+  const taken = (receipt: BusInboxReceipt): boolean =>
+    claims.claims.some(row =>
+      row.id === receipt.envelope.id && row.cursor === receipt.cursor && row.receivedAt === receipt.receivedAt &&
+      (row.completedAt !== null || row.leaseUntil > now)) ||
+    coordinationHolds.some(row => coordinationRowBlocks(row, `queue:${receipt.envelope.id}`));
 
   const list = options.listBus ?? listBusInboxAfter;
   const items: Omit<UnifiedInboxItem, 'priority'>[] = [];
   const feedPosts = new Map<string, BusFeedPost>();
-  let state: UnifiedInboxSourceState = claims.source === 'unavailable' ? 'degraded' : 'healthy';
+  let state: UnifiedInboxSourceState = claims.source === 'unavailable' || coordination.source === 'unavailable' ? 'degraded' : 'healthy';
   let after = 0;
   // Same paging bound the work loop accepts: the store retains at most
   // BUS_INBOX_MAX_MESSAGES records over BUS_INBOX_MAX_READ-sized pages.
@@ -295,15 +328,18 @@ function busItems(options: UnifiedInboxOptions): { report: UnifiedInboxSourceRep
         }
       }
       if (!isWorkReceipt(receipt) || taken(receipt)) continue;
-      const text = body !== null && typeof body === 'object' && !Array.isArray(body) && typeof body.text === 'string'
-        ? body.text : '';
+      const record = body !== null && typeof body === 'object' && !Array.isArray(body)
+        ? body as Record<string, unknown> : null;
+      const rawText = record?.['text'];
+      const subject = (typeof rawText === 'string' && rawText.trim() !== '' ? rawText : null)
+        ?? (record ? protocolTaskTitle(record) : null);
       items.push({
         id: `bus:${envelope.id}`,
         source: 'bus',
         kind: 'bus-work',
         severity: envelope.priority === 'P0' ? 'high' : envelope.priority === 'P1' ? 'warn' : 'info',
         blocking: false,
-        title: oneLine(text || `work ${envelope.from} → ${envelope.to}`, TITLE_MAX),
+        title: oneLine(subject || `work ${envelope.from} → ${envelope.to}`, TITLE_MAX),
         detail: cap(`from ${envelope.from} to ${envelope.to} · ${envelope.priority} · cursor ${receipt.cursor}`, DETAIL_MAX),
         since: iso(receipt.receivedAt),
         // The reader decrements ttl to what remains; expiry is a real deadline.

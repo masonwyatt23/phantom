@@ -78,6 +78,15 @@ function holdKey(key: string, owner = 'worker') {
     leaseMs: 600_000, leaseUntil: now + 600_000, sourceId: `test:${key}`, now });
   expect(result.status).toBe('acquired');
 }
+/** Post one envelope with an explicit id and address (protocol tasks need `to` equal to their topic). */
+function postBusBody(id: string, to: string, body: BusJsonValue, extra: { priority?: 'P0' | 'P1' | 'P2' | 'P3'; from?: string } = {}) {
+  const receipt = appendBusInbox({
+    id, from: extra.from ?? 'agent:planner', to,
+    priority: extra.priority ?? 'P1', ttl: 48 * 3_600_000, body,
+  }, { root: busRoot, now: () => now });
+  expect(receipt.status).toBe('posted');
+  return receipt;
+}
 
 describe('readUnifiedInbox sources', () => {
   it('reports empty stores with per-source state', async () => {
@@ -169,6 +178,66 @@ describe('readUnifiedInbox sources', () => {
     expect((await read()).items.filter(i => i.source === 'bus')).toHaveLength(0);
     now += 2_000;
     expect((await read()).items.filter(i => i.source === 'bus').map(i => i.id)).toEqual(['bus:stale']);
+  });
+
+  it('hides work held by a live coordination claim on its queue key', async () => {
+    postWork('coord-held'); postWork('coord-free');
+    holdKey('queue:coord-held');
+    const inbox = await read();
+    expect(inbox.items.filter(i => i.source === 'bus').map(i => i.id)).toEqual(['bus:coord-free']);
+    expect(inbox.sources.bus).toEqual({ state: 'healthy', pending: 1 });
+  });
+
+  it('re-lists work whose coordination lease has lapsed', async () => {
+    postWork('coord-stale');
+    const held = acquireCoordination({ root: busRoot, origin: 'resource', key: 'queue:coord-stale', owner: 'worker',
+      leaseMs: 1_000, leaseUntil: now + 1_000, sourceId: 'test:coord-stale', now });
+    expect(held.status).toBe('acquired');
+    expect((await read()).items.filter(i => i.source === 'bus')).toHaveLength(0);
+    now += 2_000;
+    expect((await read()).items.filter(i => i.source === 'bus').map(i => i.id)).toEqual(['bus:coord-stale']);
+  });
+
+  it('degrades the bus source when the coordination table is unreadable', async () => {
+    postWork('coord-blind');
+    mkdirSync(join(busRoot, 'coordination'), { recursive: true, mode: 0o700 });
+    writeFileSync(join(busRoot, 'coordination', 'claims.json'), '{"version":1,"claims":{},"statuses":[]}', { mode: 0o600 });
+    const inbox = await read();
+    expect(inbox.sources.bus.state).toBe('degraded');
+    expect(inbox.items.filter(i => i.source === 'bus').map(i => i.id)).toEqual(['bus:coord-blind']);
+  });
+});
+
+describe('claimable work coverage in the bus source', () => {
+  it('lists protocol task envelopes the claim path would take', async () => {
+    postBusBody('proto-task', 'fleet.deploy', {
+      protocol: { version: 1, kind: 'task', topic: 'fleet.deploy' },
+      text: 'fake protocol task',
+    });
+    postBusBody('proto-ref', 'fleet.deploy', {
+      protocol: { version: 1, kind: 'task', topic: 'fleet.deploy', payload_ref: 'pref-123' },
+    });
+    const inbox = await read();
+    const items = inbox.items.filter(i => i.source === 'bus');
+    expect(items.map(i => i.id).sort()).toEqual(['bus:proto-ref', 'bus:proto-task']);
+    expect(items.find(i => i.id === 'bus:proto-task')!.title).toBe('fake protocol task');
+    expect(items.find(i => i.id === 'bus:proto-ref')!.title).toBe('protocol task fleet.deploy: pref-123');
+    expect(items.every(i => i.act[0]!.includes('bus-claim acquire'))).toBe(true);
+  });
+
+  it('hides work bodies a non-task protocol masks and every non-task protocol kind', async () => {
+    postBusBody('masked-work', 'fleet.deploy', {
+      kind: 'work', text: 'masked', protocol: { version: 1, kind: 'result', topic: 'fleet.deploy' },
+    });
+    postBusBody('proto-result', 'fleet.deploy', {
+      protocol: { version: 1, kind: 'result', topic: 'fleet.deploy' }, text: 'a result',
+    });
+    postBusBody('proto-question', 'fleet.deploy', {
+      protocol: { version: 1, kind: 'question', topic: 'fleet.deploy' }, text: 'a question',
+    });
+    postWork('plain-work');
+    const inbox = await read();
+    expect(inbox.items.filter(i => i.source === 'bus').map(i => i.id)).toEqual(['bus:plain-work']);
   });
 });
 
