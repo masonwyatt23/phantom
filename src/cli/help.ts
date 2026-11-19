@@ -1276,7 +1276,7 @@ export const HELP_ENTRIES: HelpEntry[] = [
   { cmd: 'queue [--json]', desc: 'List queued jobs in launch order: position, id, repo, lane, tier, age and any newer cycle that replaces them.', topic: 'autonomy' },
   { cmd: 'queue top|lane|drop <id> [<lane>] [--dry-run] [--json]', desc: 'Steer one queued job: move it to the front, to another lane, or out of the queue (kept in queue/dropped.tsv).', topic: 'autonomy' },
   { cmd: 'queue supersede [--json] [--apply]', desc: 'List queued jobs that a newer cycle of the same job replaces; --apply archives them.', topic: 'autonomy' },
-  { cmd: 'queue dedupe [--file <router-queue.md>] [--apply] [--json]', desc: 'Find repeated READY jobs; preview by default, or mark repeats superseded with --apply.', topic: 'autonomy' },
+  { cmd: 'queue dedupe [--file <router-queue.md>] [--launch] [--apply] [--json]', desc: 'Find repeated READY jobs; --launch also skips jobs main or an open PR already covers. Preview by default, --apply marks them.', topic: 'autonomy' },
   { cmd: 'queue wait [--events <file>] [--json]', desc: 'Show the oldest recorded queued PR and why it is waiting; required checks stay enforced.', topic: 'observability' },
   { cmd: 'queue stats [--json] [--window <seconds>]', desc: 'Sliding-window arrival/service rates, occupancy, wait and Little’s law drift.', topic: 'observability' },
   { cmd: 'queue batches [--runs <directory>] [--json]', desc: 'Show each batch line’s PR, empty reason, failure or unknown result.', topic: 'observability' },

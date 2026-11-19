@@ -129,6 +129,11 @@ export interface QueuegenIo {
   /** Existing queue job ids; a malformed line must throw (fail closed). */
   readQueueIds(): Set<string>;
   /** Repo#PR keys occupied by live rebases, plus terminal failed/cancelled job ids. */
+  /**
+   * "<short>#<n>" PRs already named by a live (READY/CLAIMED/RUNNING) queue row,
+   * see activePrKeys(). Optional: absent means no cross-generator check.
+   */
+  readActivePrKeys?(): ReadonlySet<string>;
   readRebaseWork(): { active: ReadonlySet<string>; failed: ReadonlySet<string> };
   appendQueueLine(line: string): void;
   /** Canonical hold list as "<short>#<n>" entries; must throw if unreadable. */
@@ -164,7 +169,21 @@ export interface QueuegenSummary {
   skipped: number;
   /** Candidates withheld because their recent same-evidence attempts all came back empty. */
   suppressed: number;
+  /** Candidates not launched because a live queue row already works the same PR: an empty launch avoided. */
+  avoided: number;
   capped: boolean;
+}
+
+/** Pure: "<short>#<n>" for every PR a live queue row names (`#n`, `pr=n` or a /pull/n URL), keyed by that row's repo. */
+export function activePrKeys(queueText: string): Set<string> {
+  const keys = new Set<string>();
+  for (const line of queueText.split('\n')) {
+    if (!/^\s*-\s+(READY|CLAIMED|RUNNING)\b/i.test(line)) continue;
+    const short = /\brepo=(?:[\w.-]+\/)?([\w.-]+?)(?=[,;\s)]|$)/i.exec(line)?.[1]?.toLowerCase();
+    if (!short) continue;
+    for (const m of line.matchAll(/(?:#|\bpr=|\/pull\/)(\d+)\b/gi)) keys.add(`${short}#${m[1]}`);
+  }
+  return keys;
 }
 
 const FAILING = new Set(['failure', 'timed_out', 'cancelled', 'action_required', 'startup_failure', 'stale']);
@@ -400,7 +419,7 @@ export function runQueuegenCycle(io: QueuegenIo, options: QueuegenOptions = {}):
   }
   const now = io.now();
   const stamp = hhmm(now);
-  const summary: QueuegenSummary = { emitted: 0, deduped: 0, skipped: 0, suppressed: 0, capped: false };
+  const summary: QueuegenSummary = { emitted: 0, deduped: 0, skipped: 0, suppressed: 0, avoided: 0, capped: false };
   let hold: Set<string>;
   try {
     hold = io.readHoldList();
@@ -419,6 +438,12 @@ export function runQueuegenCycle(io: QueuegenIo, options: QueuegenOptions = {}):
     throw error;
   }
   const activeRebases = new Set(rebaseWork.active);
+  let activePrs: ReadonlySet<string> = new Set();
+  try {
+    activePrs = io.readActivePrKeys?.() ?? activePrs;
+  } catch {
+    io.log('QUEUEGEN_ACTIVE_UNAVAILABLE');
+  }
   // The outcomes ledger is read lazily — only a candidate that reaches the
   // suppression check pays for it — and at most once per cycle. A throw is
   // logged and the cycle continues unsuppressed.
@@ -475,6 +500,12 @@ export function runQueuegenCycle(io: QueuegenIo, options: QueuegenOptions = {}):
         let id = baseId;
         for (let retry = 1; dirty && rebaseWork.failed.has(id); retry++) id = `${baseId}-retry${retry}`;
         if (queueIds.has(id)) { summary.deduped++; continue; }
+        // Another live row (any generator, any head) already works this PR: a new worker would redo it.
+        if (activePrs.has(`${short}#${pr.number}`.toLowerCase())) {
+          summary.avoided++;
+          io.log(`QUEUEGEN_AVOIDED ${key}`);
+          continue;
+        }
         let line: string;
         let checkName: string;
         let file: string;
@@ -535,7 +566,7 @@ export function runQueuegenCycle(io: QueuegenIo, options: QueuegenOptions = {}):
         io.log(`QUEUEGEN_${dirty ? 'REBASE' : 'FIXUP'} ${id}`);
       }
     }
-    io.log(`QUEUEGEN_CYCLE emitted=${summary.emitted} deduped=${summary.deduped} suppressed=${summary.suppressed} skipped=${summary.skipped} capped=${summary.capped ? 1 : 0}`);
+    io.log(`QUEUEGEN_CYCLE emitted=${summary.emitted} deduped=${summary.deduped} suppressed=${summary.suppressed} avoided=${summary.avoided} skipped=${summary.skipped} capped=${summary.capped ? 1 : 0}`);
     return summary;
   } finally {
     prune(state);

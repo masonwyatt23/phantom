@@ -4,7 +4,7 @@ import type { JobOutcome } from '../src/core/queue/job-outcomes.js';
 import { coveredPrNumbers, rebaseWorkState, type RebasePlanExistingJob } from '../src/core/fleet/rebase-plan.js';
 import {
   runQueuegenCycle, firstErrorLine, errorFile, acceptanceCommand,
-  securityPinnedPath, normalizeState, fixupLine, rebaseLine,
+  securityPinnedPath, normalizeState, activePrKeys, fixupLine, rebaseLine,
   QUEUEGEN_SECURITY_PIN, QUEUEGEN_PR_WINDOW_MS,
   type QueuegenCheck, type QueuegenEmission, type QueuegenIo, type QueuegenPr, type QueuegenState,
 } from '../src/core/drive/queuegen.js';
@@ -50,6 +50,8 @@ function makeIo(options: {
   conflicts?: Map<string, string[]>;
   hold?: Set<string>;
   queueIds?: Set<string>;
+  activePrs?: Set<string>;
+  activePrsThrow?: boolean;
   state?: unknown;
   checkLogError?: Set<string>;
   conflictError?: Set<string>;
@@ -84,6 +86,10 @@ function makeIo(options: {
       return options.conflicts?.get(`${repo}#${p.number}`) ?? [];
     },
     readQueueIds: () => new Set(options.queueIds ?? []),
+    readActivePrKeys: () => {
+      if (options.activePrsThrow) throw new Error('unreadable');
+      return options.activePrs ?? new Set();
+    },
     readRebaseWork: () => ({ active: new Set(), failed: new Set() }),
     appendQueueLine: (line) => { lines.push(line); },
     readHoldList: () => {
@@ -717,5 +723,38 @@ describe('queuegen tier validation', () => {
     expect(() => runQueuegenCycle(io, { tier: 'standard' })).toThrow('did you mean "work"?');
     expect(lines).toEqual([]);
     expect(calls.some((call) => call.startsWith('merge-tree '))).toBe(false);
+  });
+});
+
+describe('queuegen avoids PRs a live queue row already works', () => {
+  const failing = (numbers: number[]) => ({
+    prs: new Map([['ashlrai/phantom', numbers.map((number) => pr({ number }))]]),
+    checks: new Map(numbers.map((n) => [`ashlrai/phantom#${n}`, [check({})]] as const)),
+    logs: new Map(numbers.map((n) => [`ashlrai/phantom#${n}/typecheck`, 'ERROR src/x.ts:1: bad'] as const)),
+    repos: ['ashlrai/phantom'],
+  });
+  it('reads PR numbers from live rows only, keyed by the row repo', () => {
+    const text = [
+      '- READY RQ-A (P1, repo=phantom): fix #11 and https://github.com/ashlrai/phantom/pull/12',
+      '- CLAIMED 09:15 dispatchd RQ-B (repo=ashlrai/locus, pr=13): work',
+      '- DONE RQ-C (repo=phantom): fix #14',
+      '- READY RQ-D (repo=phantom): no pr here',
+    ].join('\n');
+    expect([...activePrKeys(text)].sort()).toEqual(['locus#13', 'phantom#11', 'phantom#12']);
+  });
+  it('counts an avoided empty launch and emits only the uncovered PR', () => {
+    const { io, lines } = makeIo({ ...failing([1, 2]), activePrs: new Set(['phantom#1']) });
+    const summary = runQueuegenCycle(io);
+    expect(summary).toMatchObject({ emitted: 1, avoided: 1, deduped: 0 });
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain('phantom#2');
+  });
+  it('fails open when the live-row read throws or is absent', () => {
+    const throwing = makeIo({ ...failing([1]), activePrsThrow: true });
+    expect(runQueuegenCycle(throwing.io)).toMatchObject({ emitted: 1, avoided: 0 });
+    expect(throwing.calls).toContain('log QUEUEGEN_ACTIVE_UNAVAILABLE');
+    const absent = makeIo(failing([1]));
+    delete absent.io.readActivePrKeys;
+    expect(runQueuegenCycle(absent.io)).toMatchObject({ emitted: 1, avoided: 0 });
   });
 });

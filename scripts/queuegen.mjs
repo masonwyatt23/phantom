@@ -271,7 +271,7 @@ async function main() {
   flags['--mirrors-root'] = resolve(flags['--mirrors-root']);
   flags['--metrics'] = resolve(flags['--metrics']);
 
-  const { runQueuegenCycle, normalizeState, QUEUEGEN_PR_WINDOW_MS, QUEUEGEN_REPOS } =
+  const { runQueuegenCycle, activePrKeys, normalizeState, QUEUEGEN_PR_WINDOW_MS, QUEUEGEN_REPOS } =
     await import('../dist/core/drive/queuegen.js');
   const { readRebaseCoverage } = await import('../dist/cli/fleet-rebase-plan.js');
   const { rebaseWorkState } = await import('../dist/core/fleet/rebase-plan.js');
@@ -285,6 +285,7 @@ async function main() {
     checkLogTail,
     conflictFiles: (repo, pr) => conflictFiles(flags['--mirrors-root'], repo, pr),
     readQueueIds: () => readQueueIds(flags['--queue']),
+    readActivePrKeys: () => existsSync(flags['--queue']) ? activePrKeys(readFileSync(flags['--queue'], 'utf8')) : new Set(),
     readRebaseWork: () => rebaseWorkState(coverage.jobs, QUEUEGEN_REPOS),
     appendQueueLine: (line) => {
       if (dryRun) { console.log(`DRY ${line}`); return; }
