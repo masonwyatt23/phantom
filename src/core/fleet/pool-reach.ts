@@ -177,6 +177,14 @@ export function joinPoolReach(
   return reach;
 }
 
+/**
+ * Fixed public reason for a config read that threw. The thrown value is never
+ * read, stringified or forwarded: parser and filesystem errors can carry
+ * private paths or file fragments, and every caller (MCP, CLI, verse) gets
+ * this same reason.
+ */
+export const POOL_CONFIG_UNREADABLE = 'pool config unreadable';
+
 /** Join the live config read with the live tailnet read; never throws. */
 export function readPoolReach(deps: PoolReachDeps): PoolReach {
   const home = (() => { try { return deps.peers.homeDir(); } catch { return ''; } })();
@@ -190,8 +198,10 @@ export function readPoolReach(deps: PoolReachDeps): PoolReach {
   let configError: string | null = null;
   try {
     config = deps.readConfig();
-  } catch (error) {
-    configError = error instanceof Error ? error.message : String(error);
+  } catch {
+    // Config is unknown on failure: no role, no hosts, fixed reason only.
+    config = null;
+    configError = POOL_CONFIG_UNREADABLE;
   }
   return joinPoolReach(config, configError, peers, home);
 }
