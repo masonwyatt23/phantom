@@ -18,6 +18,12 @@ Exit 3 means exists: stop and finish with a short note naming the matches. Exit 
 check itself failed (unreadable file or no task found): say so and continue normally.
 The JSON carries `schema: "bets.check.v1"`, the verdict and `exitCode`.
 
+**Out of work?** Run `phm bets propose --lane <lane> --count <n> --json` to get your own next jobs.
+It reads this checkout's backlog (TODO and FIXME comments, open roadmap items, skipped tests, commands
+no docs page names), drops anything `bets check` says already exists, and ranks the rest: user-facing
+first, smallest size next. Each row has an `id`, `repo`, `size`, `goal` and an `Acceptance:` line
+(`schema: "bets.propose.v1"`). It is read-only and never writes a queue file.
+
 `ashlr router rank --tier frontier --routes routes.json --slots codex-cmp=2 --json`
 returns `{schema: "fleet.lane-rank.v1", tier, lanes}` ordered by nearest budget reset.
 `routes.json` maps pool names to existing `routeBackend` decisions, e.g.
