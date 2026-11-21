@@ -42,7 +42,10 @@ export function selectChangedFiles(changedPaths, existingPaths) {
     pythonFiles: changed.filter((path) => existing.has(path) && /\.py$/.test(path)),
     shellFiles: changed.filter((path) => existing.has(path) && /\.sh$/.test(path)),
     jsonFiles: changed.filter((path) => existing.has(path) && /\.json$/.test(path)),
-    xmlFiles: changed.filter((path) => existing.has(path) && /\.(?:xml|plist|svg)$/.test(path)),
+    // .plist.in launchd templates are XML text by contract — install.sh renders
+    // them into the .plist files launchd loads — so they take the same
+    // ElementTree check; only the .in suffix kept them out of the match.
+    xmlFiles: changed.filter((path) => existing.has(path) && /\.(?:xml|plist|svg|plist\.in)$/.test(path)),
     webTypecheck: changed.some((path) => path.startsWith('src/web-ui/')),
     authorityDrift: changed.some(affectsAuthorityDrift),
     fleetRegistry: changed.some((path) => /^src\/cli\/fleet-[^/]*\.ts$/.test(path)),
@@ -320,9 +323,11 @@ export function runJsonSyntaxCheck(root, files, read = readFileSync) {
 // encodings and only the XML one starts with "<" (after an optional BOM or
 // whitespace), so binary and OpenStep ASCII plists — comments and all —
 // skip the parser instead of failing it; a .xml or .svg that is not XML at
-// all must parse. Named HTML entities like &nbsp; are undefined in XML and
-// fail; that strictness is deliberate — the file is malformed XML even
-// where browsers render it leniently.
+// all must parse. .plist.in launchd templates always parse: they are text
+// that must render into the XML plists launchd loads, so a non-XML template
+// is a real break, never an encoding to skip. Named HTML entities like
+// &nbsp; are undefined in XML and fail; that strictness is deliberate —
+// the file is malformed XML even where browsers render it leniently.
 const XML_SYNTAX_CHECK = `import sys
 import xml.etree.ElementTree as ET
 
@@ -341,7 +346,7 @@ for path in sys.argv[1:]:
         sys.exit(1)
 `;
 
-/** Syntax-check changed XML-family files (.xml, .plist, .svg); false on any interpreter or parse failure. */
+/** Syntax-check changed XML-family files (.xml, .plist, .plist.in, .svg); false on any interpreter or parse failure. */
 export function runXmlSyntaxCheck(root, files, spawn = spawnSync) {
   const result = spawn('python3', ['-c', XML_SYNTAX_CHECK, ...files], {
     cwd: root, encoding: 'utf8', timeout: 120000,
@@ -1026,7 +1031,7 @@ function main() {
     process.exitCode = 1;
   }
   if (selection.xmlFiles.length === 0) {
-    console.log('PASS xml syntax check skipped: no xml, plist or svg change');
+    console.log('PASS xml syntax check skipped: no xml, plist, plist.in or svg change');
   } else {
     const python = pythonPreflight(spawnSync, 'changed XML files');
     if (!python.ok) {
