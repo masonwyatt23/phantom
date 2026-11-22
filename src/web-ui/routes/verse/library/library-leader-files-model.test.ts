@@ -11,6 +11,16 @@ describe('narrowLeaderFiles', () => {
     expect(narrowLeaderFiles(body([], { state: 'absent' }))?.state).toBe('absent');
     expect(narrowLeaderFiles(body([], { state: 'unavailable' }))?.state).toBe('unavailable');
   });
+  it('validates file availability and renders an unavailable title without preview content', () => {
+    const row = file('PLAN-LOG.md', '2026-11-09T10:00:00.000Z', { unavailable: true, preview: '' });
+    const parsed = narrowLeaderFiles(body([row]));
+    expect(parsed).not.toBeNull();
+    expect(leaderFileRows(parsed!.files, NOW)[0]).toMatchObject({ label: 'Plan log', preview: 'unavailable' });
+    expect(narrowLeaderFiles(body([{ ...row, unavailable: false }]))).not.toBeNull();
+    for (const unavailable of ['yes', 1, null, {}]) {
+      expect(narrowLeaderFiles(body([{ ...row, unavailable }]))).toBeNull();
+    }
+  });
   it.each([
     ['null', null],
     ['wrong version', { ...body([]), v: 2 }],

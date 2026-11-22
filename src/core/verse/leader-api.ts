@@ -74,6 +74,7 @@ import type { NeedsYouItem } from './workbench-types.js';
 import { passesMutationGate, readBody, sendJson } from '../web/api.js';
 import { handleLeaderAttachment, VERSE_LEADER_ATTACHMENT_PATH } from './leader-attachment-api.js';
 import { handleLeaderAttachmentList } from './leader-attachment-list-api.js';
+import { listLeaderAttachments } from './leader-attachment-list.js';
 import { handleLeaderAttachmentRead } from './leader-attachment-read-api.js';
 import { handleLeaderHealth, VERSE_LEADER_HEALTH_PATH } from './leader-health-api.js';
 import { handleLeaderThreadMerged, VERSE_LEADER_THREAD_MERGED_PATH } from './leader-thread-merged-api.js';
@@ -843,6 +844,15 @@ export const handleLeaderApi: ApiModule = async (ctx, req, res, path, method) =>
   if (path === VERSE_LEADER_THREAD_MERGED_PATH) return handleLeaderThreadMerged(ctx, req, res, method);
   if (path === VERSE_LEADER_HEALTH_PATH) return handleLeaderHealth(ctx, req, res, method);
   if (path === '/api/verse/leader/attachments') return handleLeaderAttachmentList(ctx, req, res, method);
+  // Read-authenticated metadata only; screenshot bytes retain their mutation
+  // token gate and are never made available through the phone gateway.
+  if (path === '/api/verse/leader/attachment-metadata') {
+    if (method !== 'GET') { sendJson(res, 405, { error: 'method not allowed' }); return true; }
+    if (!ctx.allowDispatch) { sendJson(res, 404, { error: 'not found' }); return true; }
+    if (req.url?.includes('?')) { sendJson(res, 400, { error: 'query parameters are not supported' }); return true; }
+    sendJson(res, 200, await listLeaderAttachments());
+    return true;
+  }
   if (path === VERSE_LEADER_ATTACHMENT_PATH) return handleLeaderAttachment(ctx, req, res, method);
   if (path.startsWith(`${VERSE_LEADER_ATTACHMENT_PATH}/`)) {
     return handleLeaderAttachmentRead(ctx, req, res, method, path.slice(VERSE_LEADER_ATTACHMENT_PATH.length + 1));

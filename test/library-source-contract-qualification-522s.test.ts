@@ -1,9 +1,8 @@
 /**
- * Qualification of original PR #6547's Library source contract against current
- * origin/master. These tests encode what master supports TODAY at the
- * reader-to-narrower boundary: listLeaderFiles -> JSON wire -> narrowLeaderFiles
- * -> leaderFileRows. Candidate-only behavior (unavailable metadata for known
- * files above the cap) is deliberately NOT asserted here; see BRIDGE_NOTES.md.
+ * Qualification of original PR #6547's recovered Library source contract:
+ * listLeaderFiles -> JSON wire -> narrowLeaderFiles -> leaderFileRows.
+ * Known files above the read cap retain metadata and an unavailable title;
+ * their content remains withheld. Missing and unsafe sources remain absent.
  * Synthetic temp root only; no secret-shaped fixtures.
  */
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
@@ -46,37 +45,42 @@ describe('reader to narrower: readable file', () => {
   });
 
   it('reads a file of exactly the cap but never one byte more', async () => {
-    writeFileSync(join(leader, 'VISION.md'), 'a'.repeat(CAP));
-    writeFileSync(join(leader, 'PLAN-LOG.md'), 'a'.repeat(CAP + 1));
-    const names = (await listLeaderFiles(root)).map(f => f.name);
-    expect(names).toContain('VISION.md');
-    expect(names).not.toContain('PLAN-LOG.md');
+    writeFileSync(join(leader, 'VISION.md'), 'x'.repeat(CAP));
+    writeFileSync(join(leader, 'PLAN-LOG.md'), 'x'.repeat(CAP + 1));
+    const files = await listLeaderFiles(root);
+    expect(files.find(f => f.name === 'VISION.md')).toMatchObject({ preview: 'x'.repeat(240) });
+    expect(files.find(f => f.name === 'PLAN-LOG.md')).toMatchObject({ preview: '', unavailable: true });
   });
 });
 
-describe('reader to narrower: known file above the cap (master contract)', () => {
-  it('master omits the oversized file entirely: no name, size or flag reaches the wire', async () => {
+describe('reader to narrower: known file above the cap', () => {
+  it('retains the oversized file metadata without reading its content', async () => {
     writeFileSync(join(leader, 'PLAN-LOG.md'), 'x'.repeat(CAP + 1));
     const files = await listLeaderFiles(root);
-    expect(files).toEqual([]);
-    expect(JSON.stringify(files)).not.toContain('PLAN-LOG');
+    expect(files).toEqual([{ name: 'PLAN-LOG.md', size: CAP + 1, modifiedAt: expect.any(String), preview: '', unavailable: true }]);
+    expect(JSON.stringify(files)).not.toContain('x'.repeat(240));
   });
 
-  it('master cannot tell this apart from a genuinely empty Library: both narrow to the same body', async () => {
+  it('distinguishes an unavailable file from a genuinely empty Library after serialization', async () => {
     writeFileSync(join(leader, 'PLAN-LOG.md'), 'x'.repeat(CAP + 1));
     const oversized = await viaWire();
     rmSync(join(leader, 'PLAN-LOG.md'));
     const empty = await viaWire();
     expect(oversized).not.toBeNull();
-    expect(oversized!.files).toEqual([]);
+    expect(oversized!.files).toHaveLength(1);
+    expect(oversized!.files[0]).toMatchObject({ name: 'PLAN-LOG.md', preview: '', unavailable: true });
     expect(oversized!.state).toBeUndefined();
-    expect({ ...oversized, observedAt: '' }).toEqual({ ...empty, observedAt: '' });
+    expect(empty!.files).toEqual([]);
+    expect(leaderFileRows(oversized!.files, Date.now())[0]).toMatchObject({ label: 'Plan log', preview: 'unavailable' });
   });
 
   it('the oversized file does not hide a readable sibling', async () => {
     writeFileSync(join(leader, 'PLAN-LOG.md'), 'x'.repeat(CAP + 1));
     writeFileSync(join(leader, 'VISION.md'), 'ok');
-    expect((await listLeaderFiles(root)).map(f => f.name)).toEqual(['VISION.md']);
+    const files = await listLeaderFiles(root);
+    expect(files.map(f => f.name).sort()).toEqual(['PLAN-LOG.md', 'VISION.md']);
+    expect(files.find(f => f.name === 'VISION.md')).toMatchObject({ preview: 'ok' });
+    expect(files.find(f => f.name === 'PLAN-LOG.md')).toMatchObject({ preview: '', unavailable: true });
   });
 });
 
@@ -148,13 +152,11 @@ describe('narrower: whole-response validation and the unavailable field', () => 
     expect(narrowLeaderFiles(wire([], { state: 'unavailable' }))?.state).toBe('unavailable');
   });
 
-  it('master does not model per-file unavailability: an extra flag passes through the parser but rows render the empty preview', () => {
+  it('validates per-file availability and renders unavailable files explicitly', () => {
     const body = narrowLeaderFiles(wire([row({ preview: '', unavailable: true })]));
     expect(body).not.toBeNull();
     expect((body!.files[0] as unknown as Record<string, unknown>).unavailable).toBe(true);
-    // Master rows ignore the flag, so an unreadable file looks like an empty one.
-    expect(leaderFileRows(body!.files, Date.parse('2026-11-09T12:00:00.000Z'))[0]!.preview).toBe('');
-    // And master does not validate the flag's type.
-    expect(narrowLeaderFiles(wire([row({ unavailable: 'yes' })]))).not.toBeNull();
+    expect(leaderFileRows(body!.files, Date.parse('2026-11-09T12:00:00.000Z'))[0]!.preview).toBe('unavailable');
+    expect(narrowLeaderFiles(wire([row({ unavailable: 'yes' })]))).toBeNull();
   });
 });
