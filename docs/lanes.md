@@ -26,6 +26,7 @@ Agents and scripts should use the commands, not this page:
 phm lanes health --json
 phm lanes fit --lane codex-personal --json
 phm lanes yield --json --since 24h
+phm fleet lane-auth --json
 phm lanes held --json
 phm lanes pool
 ```
@@ -34,6 +35,8 @@ phm lanes pool
 (98% used or more, nothing running): "waiting on a used-up pool until Sat 3:30 PM (10 rows)",
 "normal", or "no meter" when there is no pool reading. The gaps hook counts only rows
 that can launch now, using the same rule.
+
+`phm fleet lane-auth` reports `ok`, `missing_signin`, `expired` or `unknown` per lane from sign-in presence and job outcomes over the last 24 hours, without reading credential values. It gives blocked lanes a fix line and includes them in the hourly digest. A blocked lane with at least 25% projected unused plan also gets an Asks card.
 
 `phm lanes health` shows calls, error rate and latency per lane over the last
 12 hours. `phm lanes fit` shows which job kinds a lane should take and which
