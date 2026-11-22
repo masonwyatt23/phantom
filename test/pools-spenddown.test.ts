@@ -154,3 +154,18 @@ describe('phm pools spenddown', () => {
     expect(err).toHaveBeenCalled();
   });
 });
+
+// Test: reset already passed (past reset time, 100% used)
+it('reset already passed: pool reset 2h ago at 100% used shows refilled, never drained', () => {
+  // 100% used, reset at 2h in the past, should not show as 'drained'
+  const row = only(lane('claude', { usedPct: 100, resetAt: at(-2), burnPctPerHour: 0.5 }));
+  // If this is currently showing as 'drained', we fix the logic to make it 'idle' or 'unknown'
+  // when reset already passed (which should imply refilled)
+  expect(row).toMatchObject({
+    state: 'idle', // Should be idle for refilled pool even if fully used, since reset already happened
+    used_frac: 1,
+    reset_at: at(-2),
+    verdict: 'refilled, lane idle'
+  });
+});
+
