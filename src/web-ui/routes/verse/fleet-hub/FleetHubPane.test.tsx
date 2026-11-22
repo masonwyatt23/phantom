@@ -1,5 +1,10 @@
+import type { FleetHealth, HealthDetail } from '../../../../core/fleet/health.js';
+import { renderMobile, stubFetch } from '../mobile/mobile.test-support.js';
+import { mockViewport } from '../shell/viewport.test-support.js';
+import { HomeGlance } from '../mobile/screens/HomeGlance.js';
+import { FleetScreen } from '../mobile/screens/FleetScreen.js';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { act, fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { evictAll } from '../../../data/cache.js';
 import { getDockState, resetDockStore, subscribeDockState } from '../dock/dock-store.js';
 import { registerPane } from '../panes/pane-registry.js';
@@ -59,7 +64,7 @@ it('refreshes counts while visible and stops polling when hidden', async () => {
   expect(runsCalls()).toHaveLength(2);
 });
 
-it('shows the Not actually running group first, and only when the list is not empty', async () => {
+it('shows Not actually running immediately after health, only when the list is not empty', async () => {
   const view = render(<FleetHubPane visible />);
   await screen.findByText('1/2 · 1 held');
   expect(screen.queryByRole('region', { name: 'Not actually running' })).toBeNull();
@@ -71,9 +76,42 @@ it('shows the Not actually running group first, and only when the list is not em
   vi.stubGlobal('fetch', vi.fn(async () => Response.json({ ...fixture, notRunning })));
   render(<FleetHubPane visible />);
   const group = await screen.findByRole('region', { name: 'Not actually running' });
-  expect(group.parentElement?.firstElementChild).toBe(group);
+  expect(group.parentElement?.firstElementChild).toBe(screen.getByRole('region', { name: 'Fleet health summary' }));
+  expect(group.previousElementSibling).toHaveAttribute('aria-label', 'Fleet health summary');
   expect(group.textContent).toContain('Not actually running · 2');
   expect(group.textContent).toContain('grok-one · ultra reading older than 8h · for 3 d');
   expect(group.textContent).toContain('Next: Record a current Grok usage percent');
   expect(group.textContent).toContain('cursor · Lane heldNext: unknown');
+});
+
+const ids: HealthDetail[] = ['main', 'merges', 'pools', 'families', 'releases'];
+const report: FleetHealth = { schema: 'fleet.health.v1', asOf: '2026-11-22T19:00:00Z', lines: ids.map(id => ({ id, text: `${id}: fixture answer.` })) };
+afterEach(() => { evictAll(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+it('renders five wrapping answers at phone width and each opens its existing detail card', async () => {
+  const viewport = mockViewport(390), opened: string[] = [];
+  stubFetch({ 'GET /api/verse/fleet/health': report });
+  vi.spyOn(Element.prototype, 'scrollIntoView').mockImplementation(function (this: Element) { opened.push(this.id); });
+  const { container } = renderMobile(<div style={{ width: 390 }}><FleetScreen /></div>);
+  const summary = within(await screen.findByRole('region', { name: 'Fleet health summary' }));
+  await summary.findByRole('button', { name: 'main: fixture answer.' });
+  expect(summary.getAllByRole('listitem')).toHaveLength(5);
+  for (const id of ids) { fireEvent.click(summary.getByRole('button', { name: `${id}: fixture answer.` })); expect(container.querySelector(`#health-${id}`)).toBeInTheDocument(); }
+  expect(opened).toEqual(ids.map(id => `health-${id}`));
+  expect(container.firstElementChild).toHaveStyle({ width: '390px' }); viewport.restore();
+});
+it('offers Fleet health in one tap from Home even before Home has loaded', () => {
+  stubFetch({}); const { context } = renderMobile(<HomeGlance />);
+  fireEvent.click(screen.getByRole('button', { name: 'Fleet health' })); expect(context.navigate).toHaveBeenCalledWith({ screen: 'fleet' });
+});
+it('shows the identical five answers first in desktop Fleet', async () => {
+  stubFetch({ 'GET /api/verse/fleet/health': report }); renderMobile(<FleetHubPane visible />);
+  const summary = await screen.findByRole('region', { name: 'Fleet health summary' });
+  expect(await within(summary).findByRole('button', { name: 'main: fixture answer.' })).toBeInTheDocument();
+  expect(within(summary).getAllByRole('button').map(button => button.textContent)).toEqual(report.lines.map(line => line.text));
+});
+it('retains five useful paths when the report fails', async () => {
+  stubFetch({}); renderMobile(<FleetScreen />);
+  const summary = within(await screen.findByRole('region', { name: 'Fleet health summary' }));
+  await summary.findByRole('button', { name: /Main: unknown, because the health report could not be refreshed/ });
+  expect(summary.getAllByRole('button')).toHaveLength(5);
 });

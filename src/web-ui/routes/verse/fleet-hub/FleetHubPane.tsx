@@ -21,6 +21,7 @@ import { phoneTile } from './hub-phone-tile.js';
 import { hubBacklogQuery } from './hub-backlog-queries.js';
 import { backlogTile } from './hub-backlog-tile.js';
 import { fleetAdmissionQuery } from './fleet-admission-query.js';
+import { FleetHealthCard } from './FleetHealthCard.js';
 import { FamilyYieldCard } from './FamilyYieldCard.js';
 import styles from './fleet-hub.module.css';
 
@@ -83,6 +84,7 @@ export function FleetHubPane({ visible }: Pick<PaneProps, 'visible'>) {
     ? read.data.runsDir : '~/.ashlr-runs';
 
   return <section className={styles.pane} aria-label="Fleet">
+    <FleetHealthCard visible={visible} onOpen={id => id === 'families' ? document.getElementById('health-families')?.scrollIntoView() : openDockPane({ main: 'fleet-mission', merges: 'fleet-throughput', pools: 'fleet-pools', releases: 'fleet-metrics' }[id])} />
     {notRunning.length > 0 ? <section className={styles.notRunning} aria-label="Not actually running">
       <strong>Not actually running · {notRunning.length}</strong>
       <ul>{notRunning.map((row) => <li key={`${row.kind}:${row.job_or_lane}`}>
@@ -94,7 +96,7 @@ export function FleetHubPane({ visible }: Pick<PaneProps, 'visible'>) {
       <strong>Job starts</strong>
       <span>{admission.status === 'error' ? 'starts unknown: could not refresh admission' : admission.data?.summary ?? 'starts unknown: waiting for admission reading'}</span>
     </section>
-    <FamilyYieldCard visible={visible} />
+    <div id="health-families"><FamilyYieldCard visible={visible} /></div>
     <RunningJobsList enabled={visible && sectionVisible && documentVisible} />
     <button type="button" className={styles.primary} onClick={() => openDockPane('company')}>Company overview</button>
     <button type="button" className={styles.primary} disabled={workspaceIds.length === 0} onClick={() => openFleetWorkspace(workspaceIds)}>Open fleet workspace</button>

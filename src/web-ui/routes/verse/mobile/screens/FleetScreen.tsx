@@ -46,6 +46,11 @@ import { wasteLines } from '../fleet-waste-lines.js';
 import { FleetUsageCard } from '../FleetUsageCard.js';
 import { MapMessagesCard } from '../MapMessagesCard.js';
 import { UsageResourcesCard } from '../UsageResourcesCard.js';
+import { mainRedAgeQuery } from '../../fleet/main-red-age-query.js';
+import { MainHealthRows } from '../../fleet/MainHealthRows.js';
+import { PoolsCard, poolsQuery } from '../../home/PoolsCard.js';
+import { FamilyYieldCard, familyYieldQuery } from '../../fleet-hub/FamilyYieldCard.js';
+import { FleetHealthCard, healthQuery } from '../../fleet-hub/FleetHealthCard.js';
 import { MobileReleaseCard } from '../MobileReleaseCard.js';
 import { MobileReleasesCard } from '../MobileReleasesCard.js';
 import { homeRunsQuery } from '../home-runs-query.js';
@@ -135,6 +140,10 @@ function modeLabel(mode: BudgetMode | null | undefined): string {
 /** Pull-to-refresh: every read this screen shows, forced fresh. */
 export function refreshFleetScreen(): Promise<unknown> {
   return Promise.all([
+    refetchQuery(healthQuery.key, () => healthQuery.fetch(), true),
+    refetchQuery(familyYieldQuery.key, () => familyYieldQuery.fetch(), true),
+    refetchQuery(mainRedAgeQuery.key, () => mainRedAgeQuery.fetch(), true),
+    refetchQuery(poolsQuery.key, () => poolsQuery.fetch(), true),
     refetchQuery(verseControlQuery.key, () => verseControlQuery.fetch(), true),
     refetchQuery(fleetLiveQuery.key, () => fleetLiveQuery.fetch(), true),
     refetchQuery(homeRunsQuery.key, () => homeRunsQuery.fetch(), true),
@@ -166,6 +175,7 @@ function DecisionRow({ repo, prNumber, ...props }: RowProps & { repo: string; pr
 
 export function FleetScreen() {
   const { activity, permissions, reachability, navigate } = useMobile();
+  const mainDetails = useQuery(mainRedAgeQuery);
   const control = useQuery(verseControlQuery);
   const live = useQuery(fleetLiveQuery);
   const runs = useQuery(homeRunsQuery);
@@ -442,6 +452,10 @@ export function FleetScreen() {
 
   return (
     <Screen title="Fleet" onBack={() => navigate({ screen: 'more' })} backLabel="More" onRefresh={refreshFleetScreen} header={header} label="Fleet">
+      <FleetHealthCard onOpen={id => document.getElementById(`health-${id}`)?.scrollIntoView({ block: 'start' })} />
+      <div id="health-main" aria-label="Main branches"><MainHealthRows />{!mainDetails.data ? <p>Main: unknown, because guardian details are unavailable.</p> : null}</div>
+      <div id="health-families"><FamilyYieldCard /></div>
+      <div id="health-pools"><PoolsCard onOpenJob={job => navigate({ screen: 'worker', job })} /></div>
       {fleetCard}
       <div className={styles.stats}>
         <div className={styles.stat}>
@@ -491,13 +505,14 @@ export function FleetScreen() {
           </>
         )}
       </Section>
-      {merges.length > 0 ? (
+      <div id="health-merges">
         <Section title="Merges">
+          {!merges.length ? <Row title="Merges: unknown, because the runs report has not arrived." /> : null}
           {merges.map((line) => <div key={line.text} data-tone={line.tone}><Row title={line.text} /></div>)}
         </Section>
-      ) : null}
+      </div>
       <MobileReleaseCard />
-      <MobileReleasesCard />
+      <div id="health-releases"><MobileReleasesCard /></div>
       <Suspense fallback={<SkeletonList rows={2} label="Loading the queue" />}><QueueSection /></Suspense>
       <Section title="Budget mode" flat>{budgetBody}</Section>
       <Section title="Grant" flat footer="Grants are signed on your Mac with Touch ID.">{grantBody}</Section>

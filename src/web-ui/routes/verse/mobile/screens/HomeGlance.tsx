@@ -87,10 +87,12 @@ export function HomeGlance() {
   usePollWhileVisible(refetch, 15_000);
   const home = read.data ?? null;
   const loading = !home && (read.status === 'loading' || read.status === 'idle');
-  if (loading) return <SkeletonList rows={4} label="Loading Home" />;
+  const healthButton = <Button variant="tinted" block onClick={() => navigate({ screen: 'fleet' })}>Fleet health</Button>;
+  if (loading) return <>{healthButton}<SkeletonList rows={4} label="Loading Home" /></>;
   const health = home ? healthLine(home) : null;
   return (
     <>
+      {healthButton}
       <TodayCard home={home} />
       <BriefTiles />
       <PulseStrip />
