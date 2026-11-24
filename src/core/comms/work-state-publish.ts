@@ -74,7 +74,7 @@ export function decideWorkStatePublish(
   }
 
   // 6. Compare known assignments only; absent evidence cannot prove a reassignment.
-  if (next.state === 'ASSIGNED' || next.state === 'RUNNING') {
+  if (next.state === 'ASSIGNED' || next.state === 'RUNNING' || next.state === 'BLOCKED') {
     const before = assignment(previous);
     const after = assignment(next);
     if (before && after && (before[0] !== after[0] || before[1] !== after[1])) {
