@@ -31,7 +31,7 @@
  * task came from the Leader — a coding engine fixing a test gains nothing
  * from "Mason vetoed pausing goal X".
  *
- * SYNCHRONOUS on purpose: fleet goal assembly is synchronous. It reads two
+ * SYNCHRONOUS on purpose: fleet goal assembly is synchronous. It reads a few
  * small private files under ~/.ashlr and never an operator folder. Hits are
  * recorded fire-and-forget; a lost hit is a lost counter, never a lost note.
  */

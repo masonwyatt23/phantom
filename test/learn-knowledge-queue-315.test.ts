@@ -3,7 +3,7 @@
  * approve / edit / reject, AGENTS.md only through a fleet task, hit counts,
  * private storage. HOME is isolated by test/setup/home.ts.
  */
-import { readFileSync, rmSync, statSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -15,11 +15,13 @@ import { retroFromCloud, retroFromFleet } from '../src/core/learn/retro/extract.
 import { knowledgeBlockFor } from '../src/core/learn/retro/inject.js';
 import { agentsMdTask, buildLessonsState, decideKnowledge, enqueueCandidates, proposeAgentsMd, recurringCauses } from '../src/core/learn/retro/knowledge.js';
 import {
+  knowledgeHitsPath,
   knowledgePath,
   normalizeEvidence,
   readApprovedKnowledgeSync,
   readKnowledge,
   readKnowledgeHits,
+  readKnowledgeHitsSync,
   recordKnowledgeHits,
   saveRetro,
 } from '../src/core/learn/retro/store.js';
@@ -104,6 +106,54 @@ describe('queue', () => {
     await recordKnowledgeHits([pending!.id, 'not-an-id']);
     expect((await readKnowledgeHits()).get(pending!.id)?.hits).toBe(2);
     expect((await buildLessonsState(Date.parse(NOW))).knowledge.approved[0]!.hits).toBe(2);
+  });
+
+  it('journal hits reach the synchronous prompt read, so most-used ordering is real', async () => {
+    await enqueueCandidates(refusedRetro('p-h1'), NOW);
+    const [first] = await readKnowledge();
+    const second = refusedRetro('p-h2');
+    second.candidates = [{ text: 'A different lesson about the same parser area.', scope: first!.scope }];
+    await enqueueCandidates(second, NOW);
+    const queued = await readKnowledge();
+    expect(queued).toHaveLength(2);
+    const other = queued.find((n) => n.id !== first!.id)!;
+    // Decided at different times: with hit counts tied at zero the newer
+    // decision would win the ordering, so only real hits can put `first` ahead.
+    await decideKnowledge({ id: first!.id, decision: 'approve' }, NOW);
+    await decideKnowledge({ id: other.id, decision: 'approve' }, '2026-09-27T13:00:00.000Z');
+
+    await recordKnowledgeHits([first!.id, first!.id, first!.id, other.id], NOW);
+
+    // The stored `hits` field is never rewritten; the journal is the counter.
+    const approved = readApprovedKnowledgeSync();
+    expect(approved.find((n) => n.id === first!.id)).toMatchObject({ hits: 3, lastHitAt: NOW });
+    expect(approved.find((n) => n.id === other.id)).toMatchObject({ hits: 1, lastHitAt: NOW });
+
+    const block = knowledgeBlockFor({ repo: 'ashlrai/widget', paths: ['src/parser/lex.ts'], kind: 'fix' }, { recordHits: false });
+    expect(block.noteIds).toEqual([first!.id, other.id]);
+  });
+
+  it('the synchronous hits read is bounded: an oversized log keeps only its newest tail', async () => {
+    await enqueueCandidates(refusedRetro(), NOW);
+    const [pending] = await readKnowledge();
+    await decideKnowledge({ id: pending!.id, decision: 'approve' }, NOW);
+
+    mkdirSync(join(homedir(), '.ashlr', 'learn'), { recursive: true });
+    const staleId = 'kn_00000000000000aa';
+    const padId = 'kn_00000000000000bb';
+    const padLine = `${JSON.stringify({ id: padId, at: NOW })}\n`;
+    const pad = padLine.repeat(Math.ceil((1024 * 1024 + 64) / padLine.length));
+    writeFileSync(
+      knowledgeHitsPath(),
+      `${JSON.stringify({ id: staleId, at: '2026-01-01T00:00:00.000Z' })}\n${pad}${JSON.stringify({ id: pending!.id, at: NOW })}\n`,
+      { mode: 0o600 },
+    );
+
+    const hits = readKnowledgeHitsSync();
+    expect(hits.get(pending!.id)?.hits).toBe(1);
+    // The oldest row fell outside the 1 MiB tail window: a floor, not a fabrication.
+    expect(hits.has(staleId)).toBe(false);
+    expect(readApprovedKnowledgeSync().find((n) => n.id === pending!.id)).toMatchObject({ hits: 1, lastHitAt: NOW });
   });
 
   it('approve with an edit replaces text and scope (validated and scrubbed)', async () => {

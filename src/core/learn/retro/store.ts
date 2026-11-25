@@ -9,7 +9,8 @@
  * WHY async first: the Verse sidecar serves every route from one thread, so
  * the route reads and writes through fs/promises. The ONE synchronous reader,
  * `readApprovedKnowledgeSync`, exists for prompt builders that are themselves
- * synchronous (fleet brief assembly); it reads one small private file.
+ * synchronous (fleet brief assembly); it reads the notes file plus a bounded
+ * tail of the hits log so usage ranking sees the recorded injections.
  *
  * WHY hits live in their own append-only file: the daemon records hits while
  * Verse records decisions. Two processes rewriting one JSON would lose one
@@ -20,7 +21,7 @@
  * Paths re-resolve homedir() per call so tests can relocate HOME.
  */
 import { createHash, randomBytes } from 'node:crypto';
-import { constants, readFileSync } from 'node:fs';
+import { closeSync, constants, fstatSync, openSync, readFileSync, readSync } from 'node:fs';
 import { appendFile, lstat, mkdir, open, readdir, readFile, rename, stat, unlink, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -492,11 +493,24 @@ export async function readKnowledge(): Promise<KnowledgeNoteV1[]> {
 
 /**
  * Synchronous read of the APPROVED notes, for synchronous prompt builders.
- * One small private file under ~/.ashlr/learn — never an operator folder.
+ * One small private file under ~/.ashlr/learn — never an operator folder —
+ * plus the bounded hits tail, so the "most used" ordering downstream sees
+ * the same recorded injection counts the lessons view reports (the stored
+ * `hits` field is never rewritten; the journal is the counter).
  */
 export function readApprovedKnowledgeSync(): KnowledgeNoteV1[] {
   try {
-    return parseKnowledge(JSON.parse(readFileSync(knowledgePath(), 'utf8')) as unknown).filter((n) => n.status === 'approved');
+    const notes = parseKnowledge(JSON.parse(readFileSync(knowledgePath(), 'utf8')) as unknown)
+      .filter((n) => n.status === 'approved');
+    if (notes.length === 0) return notes;
+    const hits = readKnowledgeHitsSync();
+    if (hits.size === 0) return notes;
+    return notes.map((n) => {
+      const h = hits.get(n.id);
+      if (!h) return n;
+      const stored = Number.isFinite(n.hits) ? n.hits : 0;
+      return { ...n, hits: stored + h.hits, lastHitAt: h.lastHitAt ?? n.lastHitAt };
+    });
   } catch {
     return [];
   }
@@ -554,15 +568,9 @@ export interface HitTotals {
   lastHitAt: string | null;
 }
 
-export async function readKnowledgeHits(): Promise<Map<string, HitTotals>> {
-  const out = new Map<string, HitTotals>();
-  let raw: string;
-  try {
-    raw = await readFile(knowledgeHitsPath(), 'utf8');
-  } catch {
-    return out;
-  }
-  for (const line of raw.split('\n')) {
+/** Fold hits-log text into per-note totals; shared by the async and sync readers. */
+function parseKnowledgeHitText(text: string, out: Map<string, HitTotals>): void {
+  for (const line of text.split('\n')) {
     if (!line.trim()) continue;
     try {
       const row = JSON.parse(line) as { id?: unknown; at?: unknown; n?: unknown };
@@ -574,6 +582,54 @@ export async function readKnowledgeHits(): Promise<Map<string, HitTotals>> {
       /* skip a torn line */
     }
   }
+}
+
+export async function readKnowledgeHits(): Promise<Map<string, HitTotals>> {
+  const out = new Map<string, HitTotals>();
+  let raw: string;
+  try {
+    raw = await readFile(knowledgeHitsPath(), 'utf8');
+  } catch {
+    return out;
+  }
+  parseKnowledgeHitText(raw, out);
+  return out;
+}
+
+/** Tail bytes a synchronous hits read inspects; the compacted log stays far below this. */
+const HITS_READ_MAX_BYTES = 1024 * 1024;
+
+/**
+ * Synchronous twin of readKnowledgeHits for prompt builders that cannot
+ * await (readApprovedKnowledgeSync). Same per-note totals over a bounded
+ * tail of the same file: past the bound only the newest bytes count, so
+ * per-note hits become a floor — still recorded injections, just a partial
+ * window (the ledger readers' truncated-tail convention). Missing or
+ * unreadable reads as no hits; never throws.
+ */
+export function readKnowledgeHitsSync(): Map<string, HitTotals> {
+  const out = new Map<string, HitTotals>();
+  let raw: string;
+  try {
+    const fd = openSync(knowledgeHitsPath(), 'r');
+    try {
+      const size = fstatSync(fd).size;
+      if (size <= HITS_READ_MAX_BYTES) {
+        raw = readFileSync(fd, 'utf8');
+      } else {
+        const buffer = Buffer.alloc(HITS_READ_MAX_BYTES);
+        const bytesRead = readSync(fd, buffer, 0, HITS_READ_MAX_BYTES, size - HITS_READ_MAX_BYTES);
+        raw = buffer.subarray(0, bytesRead).toString('utf8');
+        const nl = raw.indexOf('\n');
+        if (nl >= 0) raw = raw.slice(nl + 1); // drop the partial first line
+      }
+    } finally {
+      closeSync(fd);
+    }
+  } catch {
+    return out;
+  }
+  parseKnowledgeHitText(raw, out);
   return out;
 }
 
