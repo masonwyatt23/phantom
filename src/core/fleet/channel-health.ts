@@ -12,6 +12,8 @@ import { slackInboundRequests } from '../agents/slack-status.js';
 import { loadAgentNetworkConfig } from '../agents/slack-network.js';
 import { readSlackJournal } from '../agents/slack-journal.js';
 import { bindSlackReplies } from '../agents/slack-reply-binding.js';
+import { isSlackChannelId, isSlackTs } from '../agents/slack-network.js';
+import { isSlackRequestId } from '../agents/slack-reply-identity.js';
 import { readSlackSendReceipts } from '../agents/slack-send-receipts.js';
 import { loadConfigReadOnlyStrict } from '../config.js';
 import { readImessageAckEvidence } from '../comms/imessage-ack-evidence.js';
@@ -196,18 +198,42 @@ function slackReplyBinding({ journal, sends }: SlackSnapshot, now: Date): ReplyB
   if (sends.state === 'degraded') return { store: 'unreadable', ...empty };
   const requests = slackInboundRequests(journal.entries);
   const binding = bindSlackReplies({ requests, receipts: sends.receipts, now });
-  // A row is answered only when its own Leader request id has a consistent
-  // exact-key `sent` receipt. Rows without a reply identity, or whose send is
-  // only attempted or inconsistent, stay in `unansweredAt`: pending evidence
-  // that can never certify coverage.
+  // The binder emits one row per consistent identity; conflicting locations
+  // appear more than once in uncertain and must retain row-level evidence.
+  const conflicts = new Set<string>();
+  const uncertainIds = new Set<string>();
+  for (const request of binding.uncertain) {
+    if (request.requestId === undefined) continue;
+    if (uncertainIds.has(request.requestId)) conflicts.add(request.requestId);
+    uncertainIds.add(request.requestId);
+  }
+  const grouped = new Map<string, { at: string; time: number; admitted: boolean }>();
   const answeredAt: string[] = [];
   const unansweredAt: string[] = [];
   for (const e of journal.entries) {
     if (e.decision !== 'ingested') continue;
-    const verdict = e.requestId === undefined ? undefined : binding.byRequestId.get(e.requestId);
-    // Like the trace, answered needs durable ingress (posted|duplicate): failed or unknown ingress never certifies.
-    if (verdict?.verdict === 'answered' && (e.bus === 'posted' || e.bus === 'duplicate')) answeredAt.push(e.at);
-    else unansweredAt.push(e.at);
+    const time = Date.parse(e.at);
+    const id = e.requestId;
+    if (id === undefined || !isSlackRequestId(id) || !e.channelId || !isSlackChannelId(e.channelId) ||
+        !e.messageTs || !isSlackTs(e.messageTs) || !e.threadTs || !isSlackTs(e.threadTs) ||
+        !Number.isFinite(time) || time > now.getTime() || conflicts.has(id) || !binding.byRequestId.has(id)) {
+      unansweredAt.push(e.at);
+      continue;
+    }
+    const admitted = e.bus === 'posted' || e.bus === 'duplicate';
+    const previous = grouped.get(id);
+    if (!previous) grouped.set(id, { at: e.at, time, admitted });
+    else {
+      if (time < previous.time || (time === previous.time && e.at < previous.at)) {
+        previous.at = e.at;
+        previous.time = time;
+      }
+      previous.admitted ||= admitted;
+    }
+  }
+  for (const [id, request] of grouped) {
+    if (request.admitted && binding.byRequestId.get(id)?.verdict === 'answered') answeredAt.push(request.at);
+    else unansweredAt.push(request.at);
   }
   return { store: 'ok', answeredAt, unansweredAt, futureDated: binding.futureDated };
 }
