@@ -5,6 +5,7 @@ import { join, dirname } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { readEmptyJobs, type EmptyJobResult } from '../core/fleet/empty-jobs.js';
 import { guardianReceipt, planGuardianEmptyRecovery } from '../core/fleet/guardian-empty-recovery.js';
+import { readFleetMainHealth } from '../core/fleet/main-health.js';
 
 const usage = 'Usage: phm jobs retry-empty --dry-run|--apply [--json] [--file <router-queue.md>]';
 const receipt = (id: string): string => createHash('sha256').update(id).digest('hex');
@@ -88,12 +89,12 @@ export async function cmdJobsRetryEmpty(args: string[]): Promise<number> {
     const receipts = new Set(await readdir(receiptDir).catch((error: NodeJS.ErrnoException) => { if (error.code === 'ENOENT') return []; throw error; }));
     const jobsPath = join(root, 'metrics/jobs.jsonl');
     const ledger = await readFile(jobsPath, 'utf8');
-    const recovery = planGuardianEmptyRecovery(before, ledger, receipts);
+    const recovery = planGuardianEmptyRecovery(before, ledger, receipts, await readFleetMainHealth({ runsDir: root }));
     const lines = [...planEmptyRetries(before, report.jobs, receipts), ...recovery.lines];
     if (mode === 'apply' && lines.length) {
       const ids = lines.map(line => {
         const guardian = /guardian-retry-root=([\w.-]+) guardian-retry-tier=(\w+)$/.exec(line);
-        return guardian ? guardianReceipt(guardian[1]!, guardian[2]!) : receipt(/\bretry-empty-source=([\w.-]+)$/.exec(line)![1]!);
+        return guardian ? /guardian-retry-key=([a-f0-9]{64})\b/.exec(line)?.[1] ?? guardianReceipt(guardian[1]!, guardian[2]!) : receipt(/\bretry-empty-source=([\w.-]+)$/.exec(line)![1]!);
       });
       const after = before + (before && !before.endsWith('\n') ? '\n' : '') + lines.join('\n') + '\n';
       const result = spawnSync('python3', ['-c', writer, file, join(dirname(file), 'ready.lock'), receiptDir], { input: JSON.stringify({ before, after, receipts: ids, jobsPath, ledger }), encoding: 'utf8', timeout: 10000 });
