@@ -45,7 +45,8 @@ export async function readImessageAckEvidence(limit: number, runsDir?: string, r
     let text = bytes.toString('utf8');
     if (start > 0) {
       const newline = text.indexOf('\n');
-      text = newline < 0 ? '' : text.slice(newline + 1);
+      if (newline < 0) return empty('unreadable');
+      text = text.slice(newline + 1);
     }
     const report = empty('ok');
     const lines = text.split('\n');
