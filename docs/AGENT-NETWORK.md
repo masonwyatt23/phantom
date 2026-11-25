@@ -61,7 +61,9 @@ or slots, stale mirrors and expired lane advertisements cannot qualify a node.
 The typed `chooseNodeForLane` API also accepts `{ localOnly: true }` to keep
 explicitly local work here. This is advice; it does not reserve or launch work.
 `phm nodes --discover` also lists Tailscale computers that have not joined, each
-marked "not joined" with its one join command (`phm node join`, run on that
+marked "not joined" with its one join command (the pool enrollment command,
+`phm node join --owner <scope> --primary <alias> --backup <alias> --json`, when
+this computer is in a pool; `phm node join` otherwise — run it on that
 computer); `--json` adds `discovered` with the same rows, and every row carries
 `joined` and `joinCommand`. The desktop Computers pane draws not-joined computers
 grey and joined ones in color from the same JSON.

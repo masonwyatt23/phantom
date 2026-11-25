@@ -2,7 +2,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cmdNodes } from '../src/cli/nodes.js';
 import type { HostStats, NodeRecord } from '../src/core/drive/nodes/state.js';
-import { readNodesView, type NodesRegistry, type NodesViewDeps } from '../src/core/fleet/nodes-view.js';
+import { poolJoinCommand, readNodesView, type NodesRegistry, type NodesViewDeps } from '../src/core/fleet/nodes-view.js';
 import { narrowComputers } from '../src/web-ui/routes/verse/fleet-host/computers-model.js';
 
 const NOW = Date.parse('2026-11-17T12:00:00Z');
@@ -11,15 +11,15 @@ const joinedNode: NodeRecord = { nodeId: 'laptop-two', session: 1, heartbeatAt: 
 const registry: NodesRegistry = { source: 'pool-witness', selfNode: 'desk-mac', state: { version: 'drive.nodes.v1', sequence: 1, observedAt: NOW - 1_000, nodes: [joinedNode], leader: null, jobs: [] } };
 const peer = (HostName: string, Online: boolean) => ({ HostName, OS: 'macOS', Online, LastSeen: '2026-11-17T10:42:00Z' });
 const status = (peers: unknown[]) => JSON.stringify({ BackendState: 'Running', Self: { HostName: 'desk-mac' }, Peer: Object.fromEntries(peers.map((p, i) => [`p${i}`, p])) });
-const deps = (raw: string | null): NodesViewDeps => ({
+const deps = (raw: string | null, read: NodesRegistry = registry): NodesViewDeps => ({
   peers: { now: () => new Date(NOW), homeDir: () => '/fake-home', exec: () => { if (raw === null) throw new Error('missing'); return raw; } },
-  readRegistry: () => registry, localStats: () => stats, hostName: () => 'desk-mac', timeZone: 'UTC',
+  readRegistry: () => read, localStats: () => stats, hostName: () => 'desk-mac', timeZone: 'UTC',
 });
 const TWO_ONLINE_ONE_OFF = status([peer('laptop-two', true), peer('studio-mac', true), peer('old-mini', false)]);
 
-async function run(args: string[], raw: string | null): Promise<{ code: number; out: string }> {
+async function run(args: string[], raw: string | null, read: NodesRegistry = registry): Promise<{ code: number; out: string }> {
   const log = vi.spyOn(console, 'log').mockImplementation(() => {});
-  const code = await cmdNodes(args, deps(raw));
+  const code = await cmdNodes(args, deps(raw, read));
   const out = log.mock.calls.map(c => String(c[0])).join('\n');
   return { code, out };
 }
@@ -76,5 +76,33 @@ describe('phm nodes --discover', () => {
     const cards = narrowComputers(JSON.parse(out))!.computers;
     expect(cards.find(c => c.name === 'studio-mac')).toMatchObject({ joined: false, joinCommand: 'phm node join' });
     expect(cards.find(c => c.name === 'laptop-two')).toMatchObject({ joined: true, joinCommand: null });
+  });
+
+  it('a pooled computer prints the enrollment command that actually joins', async () => {
+    // Bare `phm node join` fails on a fresh machine (--owner is required); the
+    // pool enrollment command carries the scope and SSH aliases it needs.
+    const pooled: NodesRegistry = { ...registry, pool: { owner: 'ashlr', primary: 'macbook-pro', backup: 'air' } };
+    const command = 'phm node join --owner ashlr --primary macbook-pro --backup air --json';
+    const rows = readNodesView(deps(TWO_ONLINE_ONE_OFF, pooled)).nodes;
+    expect(rows.find(r => r.name === 'studio-mac')).toMatchObject({ joined: false, joinCommand: command });
+    expect(rows.find(r => r.name === 'laptop-two')).toMatchObject({ joined: true, joinCommand: null });
+    const { out } = await run(['--discover'], TWO_ONLINE_ONE_OFF, pooled);
+    expect(out).toContain(`On studio-mac, run: ${command}`);
+    const { out: json } = await run(['--discover', '--json'], TWO_ONLINE_ONE_OFF, pooled);
+    const body = JSON.parse(json) as { discovered: { name: string; joinCommand: string | null }[] };
+    expect(body.discovered.find(r => r.name === 'studio-mac')?.joinCommand).toBe(command);
+  });
+});
+
+describe('poolJoinCommand', () => {
+  it('needs a complete, spellable pool identity', () => {
+    expect(poolJoinCommand(null)).toBeNull();
+    expect(poolJoinCommand(undefined)).toBeNull();
+    expect(poolJoinCommand({ owner: 'ashlr', primary: 'macbook-pro', backup: 'air' }))
+      .toBe('phm node join --owner ashlr --primary macbook-pro --backup air --json');
+    // A hand-built registry is not bound by readPoolConfig: unsafe fields fall back to the bare verb.
+    expect(poolJoinCommand({ owner: 'bad owner', primary: 'macbook-pro', backup: 'air' })).toBeNull();
+    expect(poolJoinCommand({ owner: 'ashlr', primary: 'host; rm -rf /', backup: 'air' })).toBeNull();
+    expect(poolJoinCommand({ owner: 'ashlr', primary: 'macbook-pro', backup: '' })).toBeNull();
   });
 });

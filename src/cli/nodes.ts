@@ -24,7 +24,8 @@ One row per known computer: reachable or not, whether Phantom is running there,
 free memory, CPU headroom, lanes, running jobs and a plain-words state.
 --can-take <lane> lists only the computers that can take a job for that lane now.
 --discover also lists Tailscale computers that have not joined, each with the one command to join it
-(run "phm node join" on that computer). JSON adds "discovered" with the same rows.
+(the pool enrollment command when this computer is in a pool, else "phm node join"; run it on that
+computer). JSON adds "discovered" with the same rows.
 It recommends a ready remote computer, then this computer if no remote is ready.
 pool: your Macs as one pool (this Mac first): online, offline or unknown, free slots,
 running jobs, load, free memory and disk, whether offload is on, when it was last seen,

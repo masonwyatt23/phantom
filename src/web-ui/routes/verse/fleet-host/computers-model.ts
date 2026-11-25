@@ -23,6 +23,8 @@ export interface ComputersView { computers: ComputerCard[]; reasons: string[] }
 
 const MAX_CARDS = 64;
 const MAX_TEXT = 160;
+/** A pool enrollment command is longer than a name: bound it by the largest legal one, never truncate it mid-command. */
+const MAX_JOIN_COMMAND = 512;
 const STATE_CODES: readonly string[] = ['ready', 'busy', 'held', 'offline', 'not-running', 'unknown'];
 const object = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === 'object' && !Array.isArray(v);
 const count = (v: unknown): number | Unknown => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : 'unknown');
@@ -48,7 +50,7 @@ export function narrowComputers(raw: unknown): ComputersView | null {
       freeSlots: count(row.freeSlots),
       // Older servers send no flag: treat as joined so nothing turns grey by guesswork.
       joined: row.joined !== false,
-      joinCommand: row.joined === false && typeof row.joinCommand === 'string' ? row.joinCommand.slice(0, MAX_TEXT) : null,
+      joinCommand: row.joined === false && typeof row.joinCommand === 'string' ? row.joinCommand.slice(0, MAX_JOIN_COMMAND) : null,
     });
   }
   return { computers, reasons: strings(raw.reasons) ?? [] };

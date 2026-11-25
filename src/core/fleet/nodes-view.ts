@@ -16,7 +16,8 @@ import { join } from 'node:path';
 import { ashlrHome } from '../cloud/store.js';
 import { sampleHostStats } from '../drive/nodes/capacity.js';
 import { readPoolConfig } from '../drive/nodes/pool-host.js';
-import { isHostStats, parseState, type HostStats, type NodeRecord, type NodesState } from '../drive/nodes/state.js';
+import { validSshHost } from '../drive/nodes/ssh.js';
+import { isHostStats, parseState, validId, type HostStats, type NodeRecord, type NodesState } from '../drive/nodes/state.js';
 import { readStableRegularFile } from '../util/stable-file-read.js';
 import { aliasMatches } from './pool-reach.js';
 import { sanitizeIdentityText, UNKNOWN } from './runtime-identity.js';
@@ -26,7 +27,9 @@ type Unknown = typeof UNKNOWN;
 /** `local`/`pool-witness` are the authority on this disk; `pool-mirror` is the primary's evidence copy;
  * `none` means no pool exists here; `elsewhere` means the list lives on another computer. */
 export type NodesRegistrySource = 'local' | 'pool-witness' | 'pool-mirror' | 'none' | 'elsewhere';
-export interface NodesRegistry { source: NodesRegistrySource; state: NodesState | null; selfNode: string | null }
+/** This computer's pool enrollment identity, present when it holds node-pool config (any role). */
+export interface NodesPoolIdentity { owner: string; primary: string; backup: string }
+export interface NodesRegistry { source: NodesRegistrySource; state: NodesState | null; selfNode: string | null; pool?: NodesPoolIdentity | null }
 export type NodeStateCode = 'ready' | 'busy' | 'held' | 'offline' | 'not-running' | 'unknown';
 
 export interface NodeRow {
@@ -57,6 +60,18 @@ export interface NodeRow {
   joinCommand: string | null;
 }
 export const JOIN_COMMAND = 'phm node join';
+/**
+ * The one command `--discover` prints for a not-joined computer. Pool
+ * enrollment is the only join that connects separate computers, so when this
+ * computer holds pool config the command carries its owner scope and SSH
+ * aliases; fields are re-checked here because a hand-built registry is not
+ * bound by readPoolConfig's validation. Otherwise the bare verb stands: on a
+ * fresh machine its own usage error names the flags it still needs.
+ */
+export function poolJoinCommand(pool: NodesPoolIdentity | null | undefined): string | null {
+  if (!pool || !validId(pool.owner) || !validSshHost(pool.primary) || !validSshHost(pool.backup)) return null;
+  return `phm node join --owner ${pool.owner} --primary ${pool.primary} --backup ${pool.backup} --json`;
+}
 export const NODES_SCHEMA = 'phantom.nodes-view.v1';
 /** A Phantom heartbeat older than this means the computer is offline. */
 export const HEARTBEAT_OFFLINE_MS = 5 * 60_000;
@@ -131,6 +146,7 @@ export function buildNodesView(
   if (mirrorStale) reasons.push(`pool mirror last updated ${clock(iso(state.observedAt), now, options.timeZone) ?? UNKNOWN}; newer node state unknown`);
 
   const selfName = peers.self !== UNKNOWN ? peers.self : safe(local.name.split('.')[0] ?? '') || UNKNOWN;
+  const joinCommand = poolJoinCommand(registry?.pool) ?? JOIN_COMMAND;
   const machines: Machine[] = [{ name: selfName, isSelf: true, reachable: true, lastSeen: asOf, records: [] }];
   for (const peer of peers.peers) {
     if (peer.name === UNKNOWN || MOBILE_OS.test(peer.os) || machines.some(m => m.name.toLowerCase() === peer.name.toLowerCase())) continue;
@@ -199,7 +215,7 @@ export function buildNodesView(
       ...headroom(machine.isSelf ? local.stats ?? undefined : newest?.hostStats),
       lanes: machine.records.length ? [...new Set((live.length ? live : machine.records).flatMap(record => record.caps ?? []))].sort() : UNKNOWN,
       jobsRunning: jobs, freeSlots: slots, stateCode, state: words,
-      joined, joinCommand: joined ? null : JOIN_COMMAND,
+      joined, joinCommand: joined ? null : joinCommand,
     };
   });
   nodes.sort((a, b) => Number(b.isSelf) - Number(a.isSelf) || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
@@ -249,16 +265,17 @@ export function readNodesView(deps: NodesViewDeps): NodesView {
 export function readNodesRegistry(): NodesRegistry {
   const config = readPoolConfig();
   const selfNode = config?.node ?? null;
-  if (config?.role === 'worker') return { source: 'elsewhere', state: null, selfNode };
+  const pool = config ? { owner: config.owner, primary: config.primary, backup: config.backup } : null;
+  if (config?.role === 'worker') return { source: 'elsewhere', state: null, selfNode, pool };
   const [directory, file, source] = !config ? ['nodes', 'nodes.json', 'local'] as const
     : config.role === 'backup' ? ['node-pool', 'nodes.json', 'pool-witness'] as const
       : ['node-pool', 'primary-mirror.json', 'pool-mirror'] as const;
   const root = join(ashlrHome(), directory), path = join(root, file);
-  if (!existsSync(path)) return { source: config ? 'elsewhere' : 'none', state: null, selfNode };
+  if (!existsSync(path)) return { source: config ? 'elsewhere' : 'none', state: null, selfNode, pool };
   const limit = 16 * 1024 * 1024;
   const read = readStableRegularFile(path, { anchorPath: root, maxFileBytes: limit, remainingBytes: limit });
   if (!read.ok) throw new Error('Node list unreadable');
-  return { source, state: parseState(JSON.parse(read.text)), selfNode };
+  return { source, state: parseState(JSON.parse(read.text)), selfNode, pool };
 }
 
 export function defaultNodesViewDeps(): NodesViewDeps {
