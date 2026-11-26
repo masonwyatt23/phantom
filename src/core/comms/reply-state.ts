@@ -73,7 +73,14 @@ function line(r: Omit<ReplyState, 'text'>): string {
   }
   const assignment = (r.state === 'BLOCKED' || r.state === 'VERIFIED') && r.owner !== null && r.claim !== null
     ? `${who}; ` : '';
-  return `${head}\n${assignment}${body}${dup}`;
+  const unavailable = [
+    r.records.inbox === 'unavailable' ? 'bus inbox' : null,
+    r.records.claims === 'unavailable' ? 'work claims' : null,
+    r.records.coordination === 'unavailable' ? 'coordination lease evidence' : null,
+  ].filter((source): source is string => source !== null);
+  const warning = unavailable.length
+    ? `\nEvidence could not be read: ${unavailable.join(', ')}; ownership and current execution cannot be fully corroborated.` : '';
+  return `${head}\n${assignment}${body}${dup}${warning}`;
 }
 
 /** First request of the thread holding `id`, by arrival order; `id` itself when it has no thread. */
