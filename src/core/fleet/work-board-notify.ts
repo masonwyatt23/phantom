@@ -31,8 +31,7 @@ import { ensurePrivateDirectory, readPrivateFileCapped, writePrivateFileAtomic }
 export const BOARD_NOTIFY_STATES = ['ASSIGNED', 'BLOCKED', 'VERIFIED'] as const;
 export type BoardNotifyState = typeof BOARD_NOTIFY_STATES[number];
 
-/** One board item as the notifier needs it: the shared `listWorkBoard`
- * row plus the blocker/verification evidence the listing drops. */
+/** One board item as the notifier needs it, with reconstructed outcome evidence. */
 export interface BoardSnapshotItem {
   id: string;
   state: WorkItemState;
@@ -46,9 +45,8 @@ export interface BoardSnapshotItem {
   verified: WorkItemEvidence['verified'] | null;
 }
 
-/** Enrich a work-board listing with the blocker/verified evidence each
- * item's own classification already used. `readEvidence` is the only I/O
- * seam; items in other states need none and stay unenriched. */
+/** Reconstruct proof from the settled board. An explicitly present but invalid
+ * result fails closed; only legacy rows with no result may reread evidence. */
 export function snapshotBoard(
   board: WorkBoardResult,
   readEvidence?: (itemId: string) => WorkItemEvidence | undefined,
@@ -56,12 +54,33 @@ export function snapshotBoard(
   return board.items.map(item => {
     let blocker: BoardSnapshotItem['blocker'] = null;
     let verified: BoardSnapshotItem['verified'] = null;
-    if ((item.state === 'BLOCKED' || item.state === 'VERIFIED') && readEvidence) {
-      try {
-        const evidence = readEvidence(item.id);
-        blocker = evidence?.blocker ?? null;
-        verified = evidence?.verified ?? null;
-      } catch { /* A failed evidence read leaves nulls: the planner drops it loud. */ }
+    const result: unknown = item.result;
+    if (item.state === 'BLOCKED' || item.state === 'VERIFIED') {
+      if (result === undefined && !Object.hasOwn(item, 'result') && readEvidence) {
+        try {
+          const evidence = readEvidence(item.id);
+          blocker = evidence?.blocker ?? null;
+          verified = evidence?.verified ?? null;
+        } catch { /* A failed evidence read leaves nulls: the planner drops it loud. */ }
+      } else if (result !== null && typeof result === 'object' && !Array.isArray(result)) {
+        const proof = result as Record<string, unknown>;
+        const text = (v: unknown): v is string => typeof v === 'string' && v.length <= 200 && v.trim() !== '';
+        const optionalText = (v: unknown): v is string | null =>
+          v === null || (typeof v === 'string' && v.length <= 200);
+        if (item.state === 'BLOCKED' && proof.kind === 'blocked' && text(proof.dependency)
+          && proof.dependency.trim().toLowerCase() !== 'unknown') {
+          blocker = { dependency: proof.dependency, source: item.source, at: item.asOf };
+        } else if (item.state === 'VERIFIED' && proof.kind === 'verified'
+          && (proof.pr === null || (typeof proof.pr === 'number' && Number.isSafeInteger(proof.pr) && proof.pr > 0))
+          && optionalText(proof.head) && optionalText(proof.tests) && optionalText(proof.artifact)
+          && ((proof.pr !== null && text(proof.head)) || text(proof.tests) || text(proof.artifact))) {
+          verified = { source: item.source, at: item.asOf,
+            ...(proof.pr !== null ? { pr: proof.pr as number } : {}),
+            ...(proof.head !== null ? { head: proof.head as string } : {}),
+            ...(proof.tests !== null ? { tests: proof.tests as string } : {}),
+            ...(proof.artifact !== null ? { artifact: proof.artifact as string } : {}) };
+        }
+      }
     }
     return { ...item, blocker, verified };
   });
