@@ -1223,7 +1223,9 @@ only be allocated once. Unhinted work and future arrivals are not counted.
 Waste is in the allowance's own units. Where there is a quota change and
 matching finishes inside the observation interval, the estimate uses the
 observed quota per token times measured tokens per job, or observed quota per
-finish when token coverage is incomplete. It is a projection, not billing
+finish when token coverage is incomplete. Quota observations must share the
+current allowance deadline, which is the earlier of its reset and expiry
+when both apply. It is a projection, not billing
 attribution: shared accounts can have usage outside Phantom. Missing data stays
 `null`. A fresh snapshot does not guarantee the same resource headroom later.
 

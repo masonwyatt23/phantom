@@ -70,6 +70,23 @@ describe('fleet resource plan', () => {
     expect(buildFleetResourcePlan(null, [], null, ledger, now).allowances.find(row => row.id === 'codex-personal')?.remaining).toBeNull();
   });
 
+  it('uses quota samples keyed by expiry when expiry precedes reset', () => {
+    const expiresAt = iso(now + hr);
+    const reading = { ...readings[0]!, expires_at: expiresAt };
+    const expiring = { ...live, readings: [reading], history: { [reading.id]: [
+      { observed_at: iso(now - hr), used: 8, reset_at: expiresAt },
+      { observed_at: iso(now), used: 18, reset_at: expiresAt },
+      { observed_at: iso(now), used: 100, reset_at: deadline },
+    ] } };
+    const plan = buildFleetResourcePlan(expiring, [node], status(), ledger, now);
+    expect(plan.lanes.find(row => row.lane === reading.id)).toMatchObject({
+      target_concurrency: 2, additional_slots: 1,
+    });
+    expect(plan.allowances.find(row => row.id === reading.id)).toMatchObject({
+      deadline_at: expiresAt, estimated_quota_per_job: 5, projected_jobs: 3, projected_waste_at_deadline: 67,
+    });
+  });
+
   it('keeps advisory unfed slots unknown when only the dispatcher total is available', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'phantom-unfed-ready-'));
     try {

@@ -85,7 +85,8 @@ export function buildFleetResourcePlan(raw: unknown, nodes: NodeRow[], status: u
     const lane = row.lane ? laneByName.get(row.lane) : undefined;
     const deadline = time(row.deadline_at);
     const minutes = Number.isFinite(deadline) ? (deadline - now) / MINUTE : null;
-    const points = (sidecar.history[row.id] ?? []).filter(point => point.reset_at === reading.reset_at &&
+    // The collector keys samples by the effective end of the allowance window.
+    const points = (sidecar.history[row.id] ?? []).filter(point => point.reset_at === row.deadline_at &&
       time(point.observed_at) <= now).sort((a, b) => time(a.observed_at) - time(b.observed_at));
     const first = points[0], last = points.at(-1);
     const measured = first && last && time(first.observed_at) < time(last.observed_at) &&
