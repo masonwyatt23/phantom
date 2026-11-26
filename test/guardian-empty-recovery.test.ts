@@ -2,6 +2,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createHash } from 'node:crypto';
 import { guardianReceipt, planGuardianEmptyRecovery as plan } from '../src/core/fleet/guardian-empty-recovery.js';
 import { cmdJobsRetryEmpty } from '../src/cli/jobs-retry-empty.js';
 
@@ -58,6 +59,62 @@ it('exhausts one retry per tier without retry chains and retains the failed chil
   expect(plan(queue.replace('tier=work', 'tier=mid'), ledger({ ...launch, tier: 'mid' }, finish), receipt).lines).toHaveLength(1);
 });
 
+it('deduplicates coverage scans across prefixes and numbered jobs, including legacy receipts', () => {
+  const alias = 'FIXUP-MAIN-phantom-abc1234-r2';
+  expect(guardianReceipt(alias, 'work')).toBe(guardianReceipt(job, 'work'));
+  const source = queue.replaceAll(job, alias).replace('typecheck', 'coverage');
+  const evidence = initial.replaceAll(job, alias);
+  const receipts = new Set([guardianReceipt(job, 'work')]);
+  for (let scan = 0; scan < 3; scan++) expect(plan(source, evidence, receipts).lines).toEqual([]);
+  const legacy = createHash('sha256').update(`${job}:work`).digest('hex');
+  expect(plan(queue, initial, new Set([legacy])).lines).toEqual([]);
+  expect(plan(source, evidence, new Set([legacy])).lines).toEqual([]);
+  expect(plan(source, evidence + '\n' + ledger({ job, state: 'CLOSED', closedAt: finish.ts }), new Set([legacy])).lines).toEqual([]);
+  const numbered = 'RQ-FIX-MAIN-phantom-abc1234-r1';
+  const numberedReceipt = createHash('sha256').update(`${numbered}:work`).digest('hex');
+  expect(plan(source, evidence + '\n' + ledger({ job: numbered, state: 'CLOSED', closedAt: finish.ts }), new Set([numberedReceipt])).lines).toEqual([]);
+  expect(plan(queue.replaceAll('abc1234', 'def5678'), initial.replaceAll('abc1234', 'def5678'), receipts).lines).toHaveLength(1);
+});
+
+it('counts failed launches once and escalates after two attempts, even under one job ID', () => {
+  const second = { ...launch, ts: '2026-11-23T12:10:00Z' };
+  const done = { ...finish, ts: '2026-11-23T12:15:00Z' };
+  expect(plan(queue, ledger(launch, finish, { ...finish, ts: '2026-11-23T12:06:00Z' }), new Set()).lines).toHaveLength(1);
+  for (const id of [job, 'FIXUP-MAIN-phantom-abc1234-r2']) {
+    const source = id === job ? queue : queue + queue.replaceAll(job, id);
+    const evidence = ledger(launch, finish, { ...second, job: id }, { ...done, job: id }, { ...done, job: id });
+    for (let scan = 0; scan < 3; scan++) {
+      const result = plan(source, evidence, new Set());
+      expect(result.lines).toEqual([]);
+      expect(result.escalations).toEqual([expect.objectContaining({ job: id, exitCode: 124 })]);
+      expect(plan(queue, evidence, new Set()).escalations).toEqual([expect.objectContaining({ job: id })]);
+    }
+    const corrected = { ...done, job: id, ts: '2026-11-23T12:16:00Z', empty: false, exit_code: 0 };
+    expect(plan(source, evidence + '\n' + ledger(corrected), new Set()).escalations).toEqual([]);
+  }
+});
+
+it('defers exhausted recovery while a sibling repair or merge-queue PR is active', () => {
+  const alias = 'FIXUP-MAIN-phantom-abc1234-r2', child = `${job}-EMPTYRETRY-work`;
+  const source = queue + retry().replace('- READY', '- DONE') + '\n';
+  const failed = [launch, finish, { ...launch, job: child }, { ...finish, job: child }];
+  for (const active of [
+    { ...launch, job: alias },
+    { event: 'published', job: alias, ts: finish.ts, url: 'https://github.com/ashlrai/phantom/pull/42' },
+  ]) expect(plan(source, ledger(...failed, active), new Set())).toEqual({ lines: [], escalations: [] });
+  expect(plan(source + queue.replaceAll(job, alias).replace('- DONE', '- READY'), ledger(...failed), new Set())).toEqual({ lines: [], escalations: [] });
+});
+
+it.each([true, false])('suppresses resolved sibling failures with eventful=%s merge evidence', eventful => {
+  const alias = 'FIXUP-MAIN-phantom-abc1234-r2';
+  const merged = { job: alias, state: 'MERGED', mergedAt: '2026-11-23T12:20:00Z', ...(eventful ? { event: 'outcome' } : {}) };
+  expect(plan(queue, ledger(launch, finish, merged), new Set())).toEqual({ lines: [], escalations: [] });
+  expect(plan(queue, ledger(launch, finish, { ...merged, state: 'CLOSED' }), new Set()).lines).toHaveLength(1);
+  const published = { event: 'publish', job: alias, ts: finish.ts, url: 'https://github.com/ashlrai/phantom/pull/42' };
+  expect(plan(queue, ledger(launch, finish, published, { job: alias, state: 'CLOSED', closedAt: merged.mergedAt }), new Set()).lines).toHaveLength(1);
+  expect(plan(queue, ledger(launch, finish, { ...merged, job: alias.replace('abc1234', 'def5678') }), new Set()).lines).toHaveLength(1);
+});
+
 it('CLI previews then applies once, preserving the original ledger, log and queue bytes', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'guardian-empty-'));
   try {
@@ -75,5 +132,11 @@ it('CLI previews then applies once, preserving the original ledger, log and queu
     expect(await cmdJobsRetryEmpty(['--apply', '--json'])).toBe(0);
     expect(JSON.parse(String(output.mock.calls.at(-1)![0])).lines).toEqual([]);
     expect(await readFile(jobs, 'utf8')).toBe(initial); expect(await readFile(log, 'utf8')).toBe('worker failed');
+    // A later scan may replace all original rows; the persisted identity still holds.
+    const alias = 'FIXUP-MAIN-phantom-abc1234-r2';
+    await writeFile(file, queue.replaceAll(job, alias)); await writeFile(jobs, initial.replaceAll(job, alias));
+    expect(await cmdJobsRetryEmpty(['--apply', '--json'])).toBe(0);
+    expect(JSON.parse(String(output.mock.calls.at(-1)![0])).lines).toEqual([]);
+    expect(await readFile(file, 'utf8')).toBe(queue.replaceAll(job, alias));
   } finally { await rm(dir, { recursive: true, force: true }); }
 });

@@ -9,6 +9,15 @@ The Fleet page shows the five most common causes, counts, and an example job for
 of why a job ended empty.
 
 For failed empty guardian repairs, preview `phm jobs retry-empty --dry-run --json`,
-then use `--apply` to queue one retry per original job and tier. Existing repairs
+then use `--apply` to queue one retry per failure and tier. The established
+`FIXUP-MAIN-<repo>-<sha>` and `RQ-FIX-MAIN-<repo>-<sha>` IDs, including `-rN`
+attempts, share a receipt; other IDs remain separate. Two distinct failed empty
+attempts for that failure exhaust recovery, even across job IDs or tiers.
+Duplicate finishes count once per launch. Existing repairs
 defer retries. Original logs and finish records stay intact; exhausted retries
 appear in `escalations` with the failed job, root, tier, exit code and reason.
+A merged sibling suppresses stale retries; a closed, unmerged PR does not prove
+resolution. CI remains the authority for branch health. Revert and merge-queue
+behavior are unchanged; this command does not modify the host-only guardian.
+Legacy numbered receipts need their original job ID in the queue or ledger;
+new receipts survive removal of every original row.
