@@ -1,0 +1,43 @@
+name: Pulse sync Windows diagnostic
+
+on:
+  push:
+    branches: [devin/pulse-sync-windows-diag]
+
+permissions:
+  contents: read
+
+jobs:
+  pulse-sync:
+    if: github.repository == 'masonwyatt23/phantom'
+    name: Pulse sync (${{ matrix.checkout.label }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        checkout:
+          - label: original
+            sha: 17f83e0a6dd3fd0a6f488c9ae533edba1854bcb9
+          - label: candidate
+            sha: 3e1b47956713867424e5ee309f165ee96606ab3c
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ matrix.checkout.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22.22.3'
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Run Pulse sync suite three times
+        shell: bash
+        run: |
+          unset CI_FAST_BAIL ASHLR_VITEST_TEST_TIMEOUT_MS
+          git rev-parse HEAD
+          result=0
+          for attempt in 1 2 3; do
+            echo "::group::Pulse sync sample ${attempt}"
+            npm run test:ci -- test/m115.pulse-sync.test.ts --reporter=verbose || result=1
+            echo "::endgroup::"
+          done
+          exit "$result"
