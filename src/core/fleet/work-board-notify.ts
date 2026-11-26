@@ -575,14 +575,24 @@ export async function sendNotifications(
     log?: (line: string) => void;
     /** Per-sender deadline; timeout leaves delivery uncertain and pending. */
     senderTimeoutMs?: number;
+    /** Aggregate deadline for this pass; unattempted notices stay pending. */
+    passTimeoutMs?: number;
   },
 ): Promise<BoardSendResult[]> {
   const results: BoardSendResult[] = [];
   const timeoutMs = Number.isFinite(opts.senderTimeoutMs) && opts.senderTimeoutMs! > 0
     ? Math.min(opts.senderTimeoutMs!, 2_147_483_647) : 30_000;
+  const passTimeoutMs = Number.isFinite(opts.passTimeoutMs) && opts.passTimeoutMs! > 0
+    ? Math.min(opts.passTimeoutMs!, 2_147_483_647) : 30_000;
+  const startedAt = performance.now();
   const append = opts.appendLedger
     ?? (opts.ledgerPath ? (row: BoardNotifyLedgerRow) => appendBoardNotifyLedger(opts.ledgerPath!, row) : undefined);
   for (const notice of notices) {
+    const remainingMs = passTimeoutMs - (performance.now() - startedAt);
+    if (remainingMs <= 0) {
+      results.push({ notice, status: 'unavailable', reason: 'pass-deadline-exceeded' });
+      continue;
+    }
     const sender = opts.senders[notice.sourceChannel];
     if (!sender) {
       results.push({ notice, status: 'no-sender', reason: `no sender for channel ${notice.sourceChannel}` });
@@ -598,7 +608,7 @@ export async function sendNotifications(
       receipt = await Promise.race([
         Promise.resolve().then(() => sender(notice)),
         new Promise<BoardSendReceipt>(resolve => {
-          timer = setTimeout(() => resolve({ status: 'unavailable', reason: 'sender-timeout' }), timeoutMs);
+          timer = setTimeout(() => resolve({ status: 'unavailable', reason: 'sender-timeout' }), Math.min(timeoutMs, remainingMs));
         }),
       ]);
     } catch { receipt = { status: 'unavailable', reason: 'sender threw' }; }
