@@ -189,7 +189,7 @@ export function foldBusHopCells(hops: readonly BusHop[]): BusHopCell[] {
     if (hopReported(hop)) reportedHops += 1;
     const known = hopKnownTokens(hop);
     recordedTokens += known;
-    const key = `${hop.from} ${hop.to}`;
+    const key = `${hop.from}\u0000${hop.to}`;
     let pair = pairs.get(key);
     if (pair === undefined) {
       pair = { from: hop.from, to: hop.to, hops: 0, tokens: 0 };
@@ -303,7 +303,7 @@ function toItem(cell: BusHopCell, result: BusHopReadResult, reportedHops: number
   const from = fieldText(cell.from, 48);
   const to = fieldText(cell.to, 48);
   return {
-    id: itemId('concentrated', `${cell.from} ${cell.to}`),
+    id: itemId('concentrated', `${cell.from}\u0000${cell.to}`),
     title: `Bus pair '${from}'→'${to}' dominates recorded hop tokens`.slice(0, MAX_TITLE_CHARS),
     prompt: concentratedPrompt(cell, result, reportedHops),
     area: 'agent-bus',

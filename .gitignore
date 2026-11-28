@@ -38,6 +38,7 @@ coverage/
 scratch/
 tmp/
 .tmp/
+.tmp-*
 .m262-wip/
 *.local
 dist-bin/

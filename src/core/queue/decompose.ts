@@ -179,7 +179,7 @@ export function parseSpawn(value: unknown): SpawnDocument {
 
 /** Deterministic child id: replays of identical scope dedup at the store. */
 function derivedId(parent: string, input: SpawnJobInput): string {
-  return `RQ-SUB-${createHash('sha256').update(`${parent} ${input.scope} ${input.acceptance}`).digest('hex').slice(0, 24)}`;
+  return `RQ-SUB-${createHash('sha256').update(`${parent}\u0000${input.scope}\u0000${input.acceptance}`).digest('hex').slice(0, 24)}`;
 }
 
 /**

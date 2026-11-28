@@ -70,6 +70,7 @@ export const REAL_IO_TEST_FILES = [
   'test/m30.ci.test.ts', // Runs real Bash workflow checks and native tsgo compiler children.
   'test/mcp/fleet-job-current-snapshot-04-sqc1.test.ts', // Creates real Git history for MCP snapshot replay reads.
   'test/no-stray-source-artifacts-373.test.ts', // Runs git ls-files to inspect tracked source artifacts.
+  'test/source-control-bytes.test.ts', // Runs git ls-files and reads every tracked script source for literal control bytes.
   'test/recut-scripts-c497.test.ts', // Runs the desktop performance script in a real Node child.
   'test/release-notes.test.ts', // Creates real Git merge history and invokes the release CLI through tsx.
   'test/release-status.test.ts', // Creates real Git tags and remote refs for release status reads.

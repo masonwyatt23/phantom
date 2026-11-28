@@ -287,7 +287,7 @@ async function runInteractive(cfg: AshlrConfig): Promise<number> {
     if (restored) return;
 
     // Ctrl-C / q → quit.
-    if (key === '' || key === 'q' || key === 'Q') {
+    if (key === '\u0003' || key === 'q' || key === 'Q') {
       finish(0);
       return;
     }

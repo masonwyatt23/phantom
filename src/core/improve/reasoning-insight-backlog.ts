@@ -171,7 +171,7 @@ export function featureClusterKeys(feature: TurnFeaturesV1): ClusterKey[] {
  */
 export function reasoningInsightId(key: ClusterKey, repo: string | null, engine: string): string {
   return 'ri-' + createHash('sha256')
-    .update([key.kind, key.variant, repo ?? '', engine ?? '', key.signature ?? ''].join(' '))
+    .update([key.kind, key.variant, repo ?? '', engine ?? '', key.signature ?? ''].join('\u0000'))
     .digest('hex')
     .slice(0, 16);
 }

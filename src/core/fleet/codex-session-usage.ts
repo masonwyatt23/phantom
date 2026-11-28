@@ -1045,10 +1045,10 @@ export function publishCodexFleetUsage(opts?: {
         lastPublishAttemptMs = nowMs;
         return { state: 'empty', path: file, report: report(usages, []) };
       }
-      const seen = new Set(stored.map((s) => `${s.account} ${s.window} ${s.at} ${s.usedPct} ${s.resetsAt}`));
+      const seen = new Set(stored.map((s) => `${s.account}\u0000${s.window}\u0000${s.at}\u0000${s.usedPct}\u0000${s.resetsAt}`));
       const merged = [...stored];
       for (const sample of codexUsageSamples(usages)) {
-        const key = `${sample.account} ${sample.window} ${sample.at} ${sample.usedPct} ${sample.resetsAt}`;
+        const key = `${sample.account}\u0000${sample.window}\u0000${sample.at}\u0000${sample.usedPct}\u0000${sample.resetsAt}`;
         if (!seen.has(key)) {
           seen.add(key);
           merged.push(sample);
