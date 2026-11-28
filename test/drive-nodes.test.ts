@@ -1161,6 +1161,8 @@ describe('result: read-only owner-scoped outcome', () => {
       expect(out).toContain(`Lease token ${claim.token}, leader-token ${claim.leaderToken};`);
       expect(out).toContain('Task:');
       expect(out).toContain(taskText);
+      // A job carrying work never reads as a connectivity ping.
+      expect(out).not.toContain('connectivity ping');
       const lease = `--job task-job --node worker --session ${session} --token ${claim.token} --leader-token ${claim.leaderToken}`;
       expect(out).toContain(`Run: phm node renew ${lease}`);
       expect(out).toContain(`Done? Run: phm node complete ${lease} --result <text>`);
@@ -1171,6 +1173,25 @@ describe('result: read-only owner-scoped outcome', () => {
       lines.length = 0;
       expect(await cmdNodeFleet('pull', ['--node', 'worker', '--session', session], { store })).toBe(0);
       expect(lines.at(-1)).toBe('No job for this node. Run: phm node plan');
+    } finally { vi.restoreAllMocks(); }
+  });
+  it('names a bare job a connectivity ping on a text pull', async () => {
+    const lines: string[] = [];
+    vi.spyOn(console, 'log').mockImplementation((line: unknown) => { lines.push(String(line)); });
+    try {
+      const store = new MemoryStore();
+      const nodes = new DriveNodes(store);
+      const joined = executeNodeFleet('join', ['--node', 'worker', '--owner', 'o'], nodes);
+      // A bare enqueue is the documented connectivity ping: no task, no pack.
+      executeNodeFleet('enqueue', ['--job', 'ping', '--owner', 'o'], nodes);
+      expect(await cmdNodeFleet('pull', ['--node', 'worker', '--session', String(joined['session'])], { store })).toBe(0);
+      const out = lines.at(-1)!;
+      expect(out).toContain('Claimed ping (owner o).');
+      expect(out).toContain('connectivity ping');
+      expect(out).not.toContain('Task:');
+      // The ping still completes through the same lease verbs as real work.
+      expect(out).toContain('Done? Run: phm node complete');
+      expect(out).toContain('Cannot run it? Run: phm node release');
     } finally { vi.restoreAllMocks(); }
   });
 });

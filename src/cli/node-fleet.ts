@@ -451,6 +451,12 @@ function text(verb: string, out: Record<string, unknown>, notes?: {
       `Lease token ${claim.token}, leader-token ${claim.leaderToken}; expires ${new Date(claim.expiresAt).toISOString()}. Renew before expiry; pass the token to every effect.`,
     ];
     if (typeof job?.task?.text === 'string' && job.task.text.length) lines.push('', 'Task:', job.task.text);
+    // A job with neither embedded task text nor a pack carries no work at
+    // all: the bare enqueue is the documented connectivity ping, so the pull
+    // says so instead of leaving a first-time node hunting for instructions
+    // that were never sent. Completing it with any result text is the whole
+    // exercise — the lease loop is what is being proven.
+    else if (job?.pack === undefined) lines.push('', 'This job carries no task or pack — a bare enqueue is a connectivity ping, so there is no work to run. Completing it with any result text proves the claim loop.');
     // The third lifecycle verb matters as much as renew/complete here: a manual
     // runner that cannot do the job (missing secret, wrong pack, out of its
     // depth) must hand the claim back at once instead of stranding it until the
