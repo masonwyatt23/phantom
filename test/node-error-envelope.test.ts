@@ -199,6 +199,29 @@ describe('phm node dispatcher and bridge', () => {
     expect(await cmdNodeBridge([])).toBe(0);
     expect(lines.join('\n')).not.toContain('fix:');
   });
+
+  it('bridge accepts --owner=<scope> and refuses malformed spellings as usage', async () => {
+    deps.bridge.mockReturnValue({ schema: 'phantom.node-bridge.v1', mode: 'dry-run', owner: 'scope',
+      inert: null, held: null, nodes: [], rows: [], leases: [],
+      claimed: [], requeued: [], completed: [], lostRace: [] });
+    const lines = capture();
+    expect(await cmdNodeBridge(['--owner=scope', '--json'])).toBe(0);
+    expect(deps.bridge).toHaveBeenCalledWith({ apply: false, owner: 'scope' });
+    // Space and = forms name the same flag; a repeat across spellings, an
+    // empty or dangling scope, a boolean with a value and unknown flags all
+    // stay usage refusals that never reach the bridge.
+    for (const args of [
+      ['--owner='], ['--owner', ''], ['--owner=a', '--owner=b'], ['--owner=a', '--owner', 'b'],
+      ['--owner', '--json'], ['--json=x'], ['--apply=x'], ['--bogus=1'],
+    ]) {
+      lines.length = 0;
+      expect(await cmdNodeBridge([...args, '--json'])).toBe(2);
+      expect(lastJson(lines).error.code).toBe('usage');
+    }
+    lines.length = 0;
+    expect(await cmdNodeBridge(['--owner'])).toBe(2);
+    expect(deps.bridge).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('node store path honesty under a relocated ASHLR_HOME', () => {

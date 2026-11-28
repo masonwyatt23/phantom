@@ -732,6 +732,54 @@ describe('phm node capacity / route CLI', () => {
     } finally { console.log = log; }
   });
 
+  it('accepts --flag=value spellings on both verbs, with the same refusals', async () => {
+    const { mkdtempSync, writeFileSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const { cmdNodeCapacity, cmdNodeRoute } = await import('../src/cli/node-capacity.js');
+    const dir = mkdtempSync(join(tmpdir(), 'node-route-eq-'));
+    const file = (name: string, value: unknown) => { writeFileSync(join(dir, name), JSON.stringify(value)); return join(dir, name); };
+    const doc = computeNodeCapacity(snap({ measuredAtMs: Date.now() }));
+    const air = computeNodeCapacity(snap({ node: 'air', measuredAtMs: Date.now() }));
+    const cap = file('cap.json', doc), cap2 = file('cap2.json', air);
+    const costs = file('costs.json', [{ provider: 'grok', model: 'grok-5', harness: 'grok', tokensPerJob: 1e6, minutesPerJob: 20 }]);
+    const jobs = file('jobs.json', [{ id: 'j1' }]);
+    const lines: string[] = [];
+    const log = console.log;
+    console.log = (line: string) => { lines.push(line); };
+    try {
+      // Every valued flag takes the = spelling, and the repeatable
+      // --capacity mixes spellings across documents.
+      expect(await cmdNodeRoute([`--capacity=${cap}`, `--capacity=${cap2}`, `--costs=${costs}`, `--jobs=${jobs}`, '--json'])).toBe(0);
+      const plan = JSON.parse(lines[0]!).plan;
+      expect(plan).toHaveLength(1);
+      expect(['mbp', 'air']).toContain(plan[0].nodeId);
+      lines.length = 0;
+      // Space and = forms mix freely inside one invocation.
+      expect(await cmdNodeRoute(['--capacity', cap, `--costs=${costs}`, '--jobs', jobs, '--json'])).toBe(0);
+      expect(JSON.parse(lines[0]!).plan[0]).toMatchObject({ jobId: 'j1' });
+      lines.length = 0;
+      // A repeat across spellings is still the duplicate refusal, and a
+      // bare flag never takes a value.
+      for (const args of [
+        ['--costs=a', '--costs=b', '--capacity=c', '--jobs=d', '--json'],
+        ['--costs', 'a', '--costs=b', '--capacity=c', '--jobs=d', '--json'],
+        ['--jobs=a', '--jobs', 'b', '--capacity=c', '--costs=d', '--json'],
+        [`--capacity=${cap}`, `--costs=${costs}`, `--jobs=${jobs}`, '--json=x', '--json'],
+        [`--capacity=${cap}`, `--costs=${costs}`, `--jobs=${jobs}`, '--outcomes-ledger=x', '--json'],
+      ]) {
+        expect(await cmdNodeRoute(args)).toBe(2);
+        expect(JSON.parse(lines.at(-1)!).error.code).toBe('usage');
+        lines.length = 0;
+      }
+      expect(await cmdNodeCapacity(['--node=a', '--node', 'b', '--json'])).toBe(2);
+      expect(JSON.parse(lines.at(-1)!).error.message).toContain('--node was given more than once');
+      lines.length = 0;
+      expect(await cmdNodeCapacity(['--node=', '--json'])).toBe(2);
+      expect(JSON.parse(lines.at(-1)!).error.message).toContain('invalid --node id');
+    } finally { console.log = log; }
+  });
+
   it('prints text-mode capacity at display precision and keeps unknown unknown', async () => {
     const { nodeCapacityText } = await import('../src/cli/node-capacity.js');
     // A previous sample 90 s back makes swapouts/min a repeating decimal, and
