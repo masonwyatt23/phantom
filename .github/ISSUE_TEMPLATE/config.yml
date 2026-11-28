@@ -1,0 +1,24 @@
+# Issue chooser for github.com/ashlrai/phantom/issues/new/choose.
+# Reference: https://docs.github.com/en/communities/using-templates-to-encourage-useful-issues-and-pull-requests/configuring-issue-templates-for-your-repository
+#
+# Every public issue picks one of the templates in this directory (bug report,
+# feature request, good-first-issue proposal); blank issues are off so a
+# report is never an empty box. Security reports do not belong in a public
+# issue at all — the contact link below routes them to SECURITY.md, which
+# describes the private channel.
+
+blank_issues_enabled: false
+
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/ashlrai/phantom/blob/master/SECURITY.md
+    about: Security-sensitive reports stay private — SECURITY.md describes the private reporting channel. Do not file them as a public issue.
+  - name: Contributing guide
+    url: https://github.com/ashlrai/phantom/blob/master/CONTRIBUTING.md
+    about: Setup, conventions, tests and the checks a pull request must pass.
+  - name: Good first issues
+    url: https://github.com/ashlrai/phantom/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22
+    about: Open starter tasks labeled "good first issue".
+  - name: Help wanted
+    url: https://github.com/ashlrai/phantom/issues?q=is%3Aissue+is%3Aopen+label%3A%22help+wanted%22
+    about: Open tasks labeled "help wanted".
