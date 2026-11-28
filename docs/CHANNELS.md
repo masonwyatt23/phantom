@@ -999,7 +999,13 @@ discipline under the read's own markers — with `--json` carrying it as
 `framed`, the cut stated when the 32 KiB bound clips the page, a missing
 or degraded store naming its `sourceState` inside the block rather than
 an invented empty page, `--watch` staying a stream that takes no frame,
-and `post` taking none either.
+and `post` taking none either. `phm fleet inbox-acks` reads the same
+MASON-INBOX.md store for its channel-ack state, so it takes the same
+`--frame <cli>` under the same
+MASON INBOX markers: a head naming the inbox, ack-ledger and reply-journal
+states so a missing or degraded store never reads as an invented empty
+ack set, then the same ack-state rows and totals the human read prints,
+with `--json` carrying the block as `framed` beside the full read.
 
 ## Gmail triage building block
 
