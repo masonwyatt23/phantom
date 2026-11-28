@@ -6,7 +6,7 @@ import {
   MASON_INBOX_FRAME_BEGIN, MASON_INBOX_FRAME_END,
   OWNER_THREAD_FRAME_BEGIN, OWNER_THREAD_FRAME_END, PEER_MAIL_FRAME_BEGIN, PEER_MAIL_FRAME_END,
   frameAgentChat, frameBusChannelRead, frameBusInbox, frameBusWakes, frameBusWorkFeed,
-  frameCommsBusRead, frameCommsDrafts, frameMasonInboxRead, frameOwnerThread, framePeerMail,
+  frameCommsBusRead, frameCommsDrafts, frameFleetInboxAcks, frameMasonInboxRead, frameOwnerThread, framePeerMail,
 } from '../src/core/agents/bus-cli-adapters.js';
 import type { AgentWakeRow, ChannelReadMessage, InboxMessage } from '../src/core/agents/bus-unified.js';
 import type { BusEnvelope } from '../src/core/fleet/bus-envelope.js';
@@ -39,6 +39,9 @@ describe('bus frame UTF-8 byte budget', () => {
     ['mason-inbox', MASON_INBOX_FRAME_BEGIN, MASON_INBOX_FRAME_END,
       (text: string) => frameMasonInboxRead('codex',
         Array(200).fill(`[2026-11-28 09:14 cli (cli-a1b2c3d4e5f6g7h8) P2] ${text}`))],
+    ['inbox-acks', MASON_INBOX_FRAME_BEGIN, MASON_INBOX_FRAME_END,
+      (text: string) => frameFleetInboxAcks('codex',
+        Array(200).fill(`acked  desktop  fake-a  ${text}`))],
     // 199 drafts plus the matched/shown/truncated summary tail make the
     // 200 rows the omission-count assertion below is written against.
     ['comms-drafts', COMMS_DRAFTS_FRAME_BEGIN, COMMS_DRAFTS_FRAME_END, (text: string) => frameCommsDrafts('codex', {

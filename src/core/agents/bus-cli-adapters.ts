@@ -711,10 +711,12 @@ export function frameAgentChat(cli: BusCli, lines: readonly string[]): string {
  * `sourceState=`/`omittedUndated=` head — a missing or degraded store names
  * its state inside the block, never an invented empty page — then one
  * `[at source priority] text` row per entry, flattened so no row can open
- * a second framed row. Same markers' discipline under its own MASON INBOX
- * markers — an inbox-entries block can never pass for the unified pending
- * view, a bus page, a thread or a feed — same 32 KiB clip bound with the
- * cut stated; identical for every CLI.
+ * a second framed row. `phm fleet inbox-acks --frame <cli>` frames the
+ * same MASON-INBOX.md store's ack-state rows under these same markers
+ * through `frameFleetInboxAcks`. Same markers' discipline under its own
+ * MASON INBOX markers — an inbox-entries block can never pass for the
+ * unified pending view, a bus page, a thread or a feed — same 32 KiB clip
+ * bound with the cut stated; identical for every CLI.
  */
 export function frameMasonInboxRead(cli: BusCli, lines: readonly string[]): string {
   return frameFormattedLines(cli, MASON_INBOX_FRAME_BEGIN, MASON_INBOX_FRAME_END, lines,
@@ -798,4 +800,24 @@ export function framePeerMail(cli: BusCli, messages: readonly BusEnvelope[]): st
   return frameRows(cli, PEER_MAIL_FRAME_BEGIN, PEER_MAIL_FRAME_END, messages, envelope =>
     clean(`[${envelope.priority} id=${envelope.id} from ${envelope.from} to ${envelope.to}] ${summary(envelope.body)}`),
     omitted => `(${omitted} more peer messages not shown; read the peer inbox again)`);
+}
+
+/**
+ * The same bounded untrusted-data block `frameBusInbox` produces, rendered
+ * for `phm fleet inbox-acks --frame <cli>` (and its `phm inbox acks`
+ * alias) — the ack-state read over the same MASON-INBOX.md entries
+ * `phm comms inbox read` frames, so it shares that read's MASON INBOX
+ * markers the way the channel, comms-bus and mailbox reads share the bus
+ * inbox markers: every row is the same channel-relayed entry text — here
+ * led by its recorded ack state, channel, entry id and scrubbed preview —
+ * plus the ack ledger's own state head and totals line, all data, never
+ * instructions. Input is the already-formatted read lines: a head naming
+ * the inbox/ledger/reply-journal states so a missing or degraded store
+ * never reads as an invented empty ack set, one row per entry and the
+ * honest `Totals:` tail — the same text the human read prints. Same 32
+ * KiB clip bound with the cut stated; identical for every CLI.
+ */
+export function frameFleetInboxAcks(cli: BusCli, lines: readonly string[]): string {
+  return frameFormattedLines(cli, MASON_INBOX_FRAME_BEGIN, MASON_INBOX_FRAME_END, lines,
+    omitted => `(${omitted} more inbox-acks lines not shown; read inbox-acks again)`);
 }
