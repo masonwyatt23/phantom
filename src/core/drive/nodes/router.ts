@@ -118,10 +118,13 @@ function firstJoinFix(job: QueueJobV1, requires: string[]): string {
   return `No live node belongs to owner '${job.owner}'.${versionCapNote(requires.filter(isVersionCap))} Run: phm node join --owner ${job.owner}${capsArg}`;
 }
 
+/** An observation timestamp is evidence only inside two heartbeat intervals:
+ * a missing, future-dated or older sample is unknown, never a measured zero. */
+const fresh = (at: number, now: number, interval: number): boolean => at > 0 && at <= now && now - at <= 2 * interval;
+
 /** Shared capacity slice of fleet.awareness.v1. Pool dispatch recomputes it inside the
  * witness transaction; file mirrors can never grant claims. No IO or state mutation. */
 export function nodeCapacityView(state: NodesState | null, now: number) {
-  const fresh = (at: number, now: number, interval: number) => at > 0 && at <= now && now - at <= 2 * interval;
   const safe = (s: string) => scrubSecrets(s) === s;
   const groups = new Map<string, NonNullable<NodesState>['nodes']>();
   for (const node of state?.nodes ?? []) {
@@ -154,6 +157,40 @@ export function nodeCapacityView(state: NodesState | null, now: number) {
       latency: { samples: durations.length, medianMs: median, windowMs: 86_400_000 } };
   }).sort((a, b) => a.hostId.localeCompare(b.hostId));
   return hosts;
+}
+
+/** Why a node's capacity refuses work: 'full' is a measured bound with no
+ * room left, 'held' is a measured capacity hold, and 'unknown' is capacity
+ * evidence the router cannot see — a missing, stale, future-dated or
+ * conflicting sample, or an unattributed live claim that makes every host's
+ * load uncertain. Unknown is never reported as full. */
+type CapacityBlock = 'full' | 'held' | 'unknown';
+
+/** Plain words for the measured holds a capacity sample can carry (isNodeCapacity). */
+const HELD_WORDS: Record<string, string> = {
+  'memory-unmeasured': 'memory not measured',
+  'memory-pressure': 'memory pressure',
+  'disk-unmeasured': 'disk not measured',
+  'disk-pressure': 'disk pressure',
+};
+
+/** The capacity fix names what actually blocks. A measured-full host keeps
+ * the original sentence; a measured hold names the hold; unmeasured capacity
+ * says the free slots are unknown — not zero — and names the beat that
+ * re-measures them, instead of claiming the slots are gone. */
+function capacityFix(owner: string, blocks: ReadonlySet<CapacityBlock>, held: ReadonlySet<string>): string {
+  if (!blocks.has('held') && !blocks.has('unknown')) {
+    return `Nodes owned by '${owner}' have no free job slots. Wait for work to finish or memory headroom to recover.`;
+  }
+  const heldList = [...held].sort().map(h => HELD_WORDS[h] ?? h).join(', ') || 'a measured hold';
+  const clauses: string[] = [];
+  if (blocks.has('full')) clauses.push('have no free job slots');
+  if (blocks.has('held')) clauses.push(`are held by measured capacity (${heldList})`);
+  if (blocks.has('unknown')) clauses.push('have not reported fresh measured capacity — free slots are unknown, not zero');
+  const remedies: string[] = [];
+  if (blocks.has('full') || blocks.has('held')) remedies.push('Wait for running work to finish or the measured hold to clear.');
+  if (blocks.has('unknown')) remedies.push('Keep \'phm node beat --watch\' running — it re-measures capacity each pass — or pass --capacity "$(phm node measure)" on each beat so free slots are measured.');
+  return `Nodes owned by '${owner}' ${clauses.join('; ')}. ${remedies.join(' ')}`;
 }
 
 /** The gh-auth fix must be runnable: `phm node beat --probe-auth` alone is a
@@ -191,14 +228,40 @@ export function planRoutes(state: NodesState, now: number, owner?: string): Rout
   for (const job of state.jobs) {
     if (!job.owner || (owner !== undefined && job.owner !== owner) || !routable(job, now)) continue;
     const reasons = new Map<string, number>();
+    const capacityBlocks = new Set<CapacityBlock>();
+    const heldWhys = new Set<string>();
     let best: NodeRecord | null = null;
     for (const node of nodes) {
       const why = shortfall(node, job);
       if (why) { reasons.set(why.split(':')[0]!, 1); continue; }
-      if (node.slots !== undefined && claims.get(node.nodeId)! >= node.slots) { reasons.set('capacity', 1); continue; }
+      if (node.slots !== undefined && claims.get(node.nodeId)! >= node.slots) {
+        reasons.set('capacity', 1);
+        // A zero bound a fresh measured hold produced is a hold, not an
+        // exhausted count; a positive bound with live claims — or a zero bound
+        // whose hold evidence has gone stale — is genuinely full.
+        const held = node.slots === 0 && node.capacity !== undefined &&
+          fresh(node.capacity.sampledAtMs, now, NODE_HEARTBEAT_MS) ? node.capacity.held : undefined;
+        if (held) { capacityBlocks.add('held'); heldWhys.add(held); } else capacityBlocks.add('full');
+        continue;
+      }
       const host = hosts.get(node.nodeId);
       if (state.pool && (!host || !host.eligibleNodeIds.includes(node.nodeId) ||
-          (host.freeSlots ?? 0) <= (reserved.get(host.hostId) ?? 0))) { reasons.set('capacity', 1); continue; }
+          (host.freeSlots ?? 0) <= (reserved.get(host.hostId) ?? 0))) {
+        reasons.set('capacity', 1);
+        // freeSlots null means the host's slot budget is unmeasured, stale,
+        // future-dated or conflicted — or an unattributed live claim makes
+        // every host's load uncertain. That is unknown capacity, not a full
+        // host; the fix must name the missing evidence, not claim slots are
+        // gone. A measured hold on the host names the hold instead. Reaching
+        // here with measured room left means this node itself reported no
+        // fresh capacity — still unknown. Only a measured budget with no room
+        // left is genuinely full.
+        if (host?.held) { capacityBlocks.add('held'); heldWhys.add(host.held); }
+        else if (host === undefined || host.freeSlots === null ||
+            host.freeSlots > (reserved.get(host.hostId) ?? 0)) capacityBlocks.add('unknown');
+        else capacityBlocks.add('full');
+        continue;
+      }
       const score = (n: NodeRecord) => {
         const h = hosts.get(n.nodeId)!;
         return state.pool ? ((h.freeSlots ?? 0) - (reserved.get(h.hostId) ?? 0)) / Math.max(1, h.latency.medianMs ?? neutralLatency) : -load.get(n.nodeId)!;
@@ -224,7 +287,7 @@ export function planRoutes(state: NodesState, now: number, owner?: string): Rout
     const fix = inScope.length === 0
       ? firstJoinFix(job, requires)
       : reasons.has('capacity')
-        ? `Nodes owned by '${job.owner}' have no free job slots. Wait for work to finish or memory headroom to recover.`
+        ? capacityFix(job.owner, capacityBlocks, heldWhys)
         : capsReady.length === 0
           ? capsRejoinFix(job, inScope)
           : reasons.has('auth')
