@@ -16,7 +16,7 @@ import { cmdOrg } from '../src/cli/org.js';
 const NOW = Date.parse('2026-11-17T12:00:00Z'), AT = '2026-11-17T12:00:00Z';
 const session = (job: string, lane: string, extra: object = {}) => ({ job, lane, repo: 'phantom', model: 'claude-fable-5-2', status: 'running',
   elapsedSeconds: 600, startedAt: '2026-11-17T11:50:00Z', live: 'yes', ...extra });
-function map(sessions: object[], messages?: Parameters<typeof fleetOrgMap>[1]['messages']): FleetOrgMap {
+function map(sessions: object[], messages?: NonNullable<Parameters<typeof fleetOrgMap>[1]>['messages']): FleetOrgMap {
   return fleetOrgMap(null, { now: NOW, messages,
     sessions: { generatedAt: AT, sourceState: 'healthy', truncated: false, recent: [], sessions } as unknown as FleetSessionsV1 });
 }
@@ -109,7 +109,7 @@ describe('fleetOrgTree', () => {
 
 describe('fleetOrgTree health and message times', () => {
   it('carries each lane health badge, null for a lane with no reading, and the last message time', () => {
-    const edges = { source: 'available', edges: [{ from: { address: 'leader', provider: null }, to: { address: 'claude', provider: null }, messages: 2, messagesLastHour: 2, lastAt: Date.parse('2026-11-17T11:55:00Z') }] } as unknown as Parameters<typeof fleetOrgMap>[1]['messages'];
+    const edges = { source: 'available', edges: [{ from: { address: 'leader', provider: null }, to: { address: 'claude', provider: null }, messages: 2, messagesLastHour: 2, lastAt: Date.parse('2026-11-17T11:55:00Z') }] } as unknown as NonNullable<Parameters<typeof fleetOrgMap>[1]>['messages'];
     const tree = fleetOrgTree(map([session('RQ-A', 'claude')], edges), { runs: runs([lane('claude', 1, 8, 0)]),
       laneHealth: [{ lane: 'claude', health: { state: 'starved', reason: 'starved: 5 free slots', number: 5 } }, { lane: 'devin' }] });
     expect(find(tree, 'claude').health).toEqual({ state: 'starved', reason: 'starved: 5 free slots', number: 5 });
@@ -139,8 +139,12 @@ describe('phm org', () => {
       expect(await cmdOrg(['--text', '--minutes', '15'])).toBe(0);
       expect(out.pop()).toContain('claude (Anthropic, claude-fable-5-2): running. 1 running of 8, 0 queued, usage unknown');
       expect(mocks.read).toHaveBeenLastCalledWith(15);
+      // --minutes=N spells the same window inline, the form the subcommand
+      // flags and the node pool parser already take.
+      expect(await cmdOrg(['--minutes=45', '--json'])).toBe(0);
+      expect(mocks.read).toHaveBeenLastCalledWith(45);
       mocks.read.mockClear();
-      for (const args of [['--apply'], ['--minutes'], ['--file', 'org.toml']]) expect(await cmdOrg(args)).toBe(2);
+      for (const args of [['--apply'], ['--minutes'], ['--minutes=abc'], ['--file', 'org.toml']]) expect(await cmdOrg(args)).toBe(2);
       // A window outside 1..1440 or not a whole number is usage (exit 2) with
       // the org.error.v1 envelope — the same refusal --window and --minutes
       // give on the fleet verbs — never the operational 'error' exit 1.

@@ -55,12 +55,27 @@ Default file: ~/.ashlr/org.toml (create one with init, or use a copy of the lead
 
 function take(args: string[], name: string): string[] {
   const out: string[] = [];
-  for (let i = args.indexOf(name); i >= 0; i = args.indexOf(name)) {
+  const inline = `${name}=`;
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!;
+    // --flag=value spells the same flag as --flag value, the form the node
+    // pool and fleet parsers already take. The value runs to the end of the
+    // token, so --lane=devin=20 keeps the '=' inside its own value.
+    if (arg.startsWith(inline)) {
+      const v = arg.slice(inline.length);
+      if (v === '') throw new OrgError(`${name} needs a value.`);
+      out.push(v);
+      args.splice(i--, 1);
+      continue;
+    }
+    if (arg !== name) continue;
     const v = args[i + 1];
-    args.splice(i, 2);
-    // A flag where the value belongs is a missing value, never a value.
-    if (v === undefined || v.startsWith('--')) throw new OrgError(`${name} needs a value.`);
+    // A flag where the value belongs — or an empty one — is a missing value,
+    // never a value.
+    if (v === undefined || v === '' || v.startsWith('--')) throw new OrgError(`${name} needs a value.`);
     out.push(v);
+    args.splice(i, 2);
+    i--;
   }
   return out;
 }
@@ -115,9 +130,16 @@ function orgFailure(json: boolean, command: string, err: unknown): number {
 
 /** Bare `phm org`: the live tree the Fleet map draws. Reads only; the builder is src/core/fleet/org-tree.ts. */
 async function liveOrg(args: string[]): Promise<number> {
-  const asText = args.includes('--text'), asJson = args.includes('--json'), at = args.indexOf('--minutes');
-  const minutesArg = at < 0 ? undefined : args[at + 1];
-  const rest = args.filter((arg, i) => arg !== '--text' && arg !== '--json' && i !== at && (at < 0 || i !== at + 1));
+  const asText = args.includes('--text'), asJson = args.includes('--json');
+  // --minutes takes its value the same two ways the subcommand flags do:
+  // `--minutes N` consumes the next token, `--minutes=N` carries it inline.
+  const at = args.findIndex((a) => a === '--minutes' || a.startsWith('--minutes='));
+  const inlineMinutes = at >= 0 && args[at]!.startsWith('--minutes=');
+  const minutesArg = at < 0 ? undefined
+    : inlineMinutes ? args[at]!.slice('--minutes='.length)
+    : args[at + 1];
+  const rest = args.filter((arg, i) => arg !== '--text' && arg !== '--json' &&
+    i !== at && (inlineMinutes || at < 0 || i !== at + 1));
   if (rest.length || (at >= 0 && minutesArg === undefined)) return orgUsage(asJson, 'org');
   const [{ readFleetOrgMap }, { mapWindowMinutesOrNull }, { renderOrgTreeText }, { sanitizePublicJson }] = await Promise.all([
     import('../core/verse/fleet-org-map-api.js'), import('../core/fleet/org-map.js'), import('../core/fleet/org-tree.js'), import('../core/util/public-json.js')]);
