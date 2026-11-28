@@ -617,6 +617,46 @@ describe('cmdOrg', () => {
     vi.unstubAllEnvs();
   });
 
+  it('accepts --flag=value spellings on join, init, show and plan', async () => {
+    const home = tmp(); vi.stubEnv('ASHLR_HOME', home); vi.stubEnv('HOME', home);
+    const logs: string[] = [];
+    vi.spyOn(console, 'log').mockImplementation((s) => { logs.push(String(s)); });
+    const file = 'docs/examples/org.toml';
+    // --lane=codex-personal=20 is flag '--lane' with value 'codex-personal=20':
+    // the value's own '=' survives the flag split, so the opt-in lands at 20%.
+    expect(await cmdOrg(['join', `--file=${file}`, '--member=mason-scofield', '--machine=sco-mac',
+      '--lane=codex-personal=20', '--json'])).toBe(0);
+    expect(JSON.parse(logs.pop()!).record.lanes).toEqual([{ lane: 'codex-personal', share: 20 }]);
+    // Mixed spellings parse identically; --agent's <id>:<lane> value is inline too.
+    const initFile = join(home, 'org.toml');
+    expect(await cmdOrg(['init', `--file=${initFile}`, '--member', 'ada', '--machine=ada-mac', '--name=Ada',
+      '--lane=claude=100', '--lane', 'devin=50', '--agent=ada-claude:claude', '--json'])).toBe(0);
+    const init = JSON.parse(logs.pop()!);
+    expect(init).toMatchObject({ member: 'ada', machine: 'ada-mac' });
+    expect(init.lanes).toEqual([{ lane: 'claude', share: 100 }, { lane: 'devin', share: 50 }]);
+    expect(init.agents).toEqual([{ id: 'ada-claude', lane: 'claude', machine: 'ada-mac',
+      roles: ['implementer'], reports_to: 'ada' }]);
+    // show and plan read the same --file/--queue spellings.
+    expect(await cmdOrg(['show', `--file=${file}`, '--json'])).toBe(0);
+    expect(JSON.parse(logs.pop()!).schema).toBe('org.show.v1');
+    const queue = join(home, 'jobs.json');
+    writeFileSync(queue, '[{"id":"RQ-1","priority":3,"costPct":2,"lane":"claude"}]\n');
+    expect(await cmdOrg(['plan', `--file=${file}`, `--queue=${queue}`, '--json'])).toBe(0);
+    expect(JSON.parse(logs.pop()!).schema).toBe('org.plan.v1');
+    // A repeated flag across spellings is still a duplicate, and = with no
+    // value is a missing value — never an empty member or lane name.
+    for (const [args, said] of [
+      [['join', `--file=${file}`, '--member=evan-deloria', '--member', 'mason-wyatt', '--machine=evan-mac', '--json'], 'more than once'],
+      [['join', `--file=${file}`, '--member=', '--machine=evan-mac', '--json'], '--member needs a value'],
+      [['join', `--file=${file}`, '--member=evan-deloria', '--machine=evan-mac', '--lane=', '--json'], '--lane needs a value'],
+      [['show', `--file=${file}`, '--file', file, '--json'], 'more than once'],
+    ] as const) {
+      expect(await cmdOrg([...args]), args.join(' ')).toBe(1);
+      expect(JSON.parse(logs.pop()!).error.message).toContain(said);
+    }
+    vi.unstubAllEnvs();
+  });
+
   it('init --agent declares implementers so a fresh org can actually plan work', async () => {
     const home = tmp(); vi.stubEnv('ASHLR_HOME', home); vi.stubEnv('HOME', home);
     const logs: string[] = [];
