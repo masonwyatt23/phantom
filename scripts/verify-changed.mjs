@@ -305,6 +305,7 @@ export function selectChangedFiles(changedPaths, existingPaths) {
     batsFiles: changed.filter((path) => existing.has(path) && BATS_FILE.test(path) && !path.startsWith('test/fixtures/')),
     jsonFiles: changed.filter((path) => existing.has(path) && (/\.(?:json|webmanifest)$/.test(path) || TSBUILDINFO_FILE.test(path))),
     jsonlFiles: changed.filter((path) => existing.has(path) && /\.jsonl$/.test(path)),
+    encodingFiles: changed.filter((path) => existing.has(path) && /\.(?:b64|hex)$/i.test(path)),
     xmlFiles: changed.filter((path) => existing.has(path) && /\.(?:xml|plist(?:\.in)?|svg)$/.test(path)),
     webTypecheck: changed.some((path) => path.startsWith('src/web-ui/')),
     authorityDrift: changed.some(affectsAuthorityDrift),
@@ -1273,6 +1274,81 @@ export function runJsonlSyntaxCheck(root, files, read = readFileSync) {
     return false;
   }
   console.log('PASS jsonl syntax check');
+  return true;
+}
+
+/**
+ * The .b64 payload — ASCII whitespace removed, since Node's base64
+ * decoder skips it and the corpus wraps long payloads across lines —
+ * must be canonical base64: the fixture readers Buffer.from(...,
+ * 'base64') the file and the strictest assert the decode re-encodes to
+ * the same text, so a payload that only decodes leniently — stray
+ * characters the decoder skips, missing padding, non-canonical trailing
+ * bits — fails the same way here. Each violated rule is named; an empty
+ * payload is a failure too (the file carries no record).
+ */
+function base64PayloadFailure(compact) {
+  if (compact === '') return 'the payload is empty';
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(compact)) return 'contains characters outside the canonical base64 alphabet';
+  if (compact.length % 4 !== 0) return 'length is not a multiple of 4 characters';
+  if (Buffer.from(compact, 'base64').toString('base64') !== compact) {
+    return 'does not round-trip: decoding and re-encoding changes the text';
+  }
+  return null;
+}
+
+/**
+ * The trimmed .hex payload must be an even-length run of hexadecimal
+ * digits — the whole-byte encoding Buffer.from(..., 'hex') readers apply.
+ * Node's hex decoder stops silently at the first non-hex pair, so an
+ * invalid character or an odd length would decode to truncated bytes
+ * without any reader error; the grammar check fails it here instead.
+ * What the bytes mean (the current fixtures are UTF-8 JSON) is the
+ * consumer's contract, not the file format's, so it stays unchecked.
+ */
+function hexPayloadFailure(compact) {
+  if (compact === '') return 'the payload is empty';
+  if (!/^[0-9a-fA-F]+$/.test(compact)) return 'contains characters outside the hexadecimal alphabet';
+  if (compact.length % 2 !== 0) return 'length is odd — hex encodes whole bytes';
+  return null;
+}
+
+/**
+ * Encoded-payload check for changed .b64 and .hex files — the repo's
+ * encoded fixture corpora (.b64 payloads under test/fixtures and the
+ * workplan receipt fixtures), the only structured file types no other
+ * grammar step reads. .b64 holds base64 text, line-wrapped where long —
+ * the decoder skips ASCII whitespace, so the check strips it and then
+ * requires the canonical form (the decode re-encodes to itself). .hex
+ * holds a contiguous even-length hexadecimal run — the hex decoder
+ * stops at the first non-hex byte, so whitespace there is corruption,
+ * not wrapping. Like the .jsonl check there is no preflight or SKIP
+ * path; the check needs no external tool. Each failing path is named
+ * with the rule it broke.
+ */
+export function runEncodedPayloadCheck(root, files, read = readFileSync) {
+  const failures = [];
+  for (const path of files) {
+    let text;
+    try {
+      text = read(resolve(root, path), 'utf8');
+    } catch (error) {
+      failures.push(`${path}: ${error.message}`);
+      continue;
+    }
+    if (/\.b64$/i.test(path)) {
+      const failure = base64PayloadFailure(text.replace(/[ \t\r\n\f\v]+/g, ''));
+      if (failure !== null) failures.push(`${path}: ${failure}`);
+    } else {
+      const failure = hexPayloadFailure(text.trim());
+      if (failure !== null) failures.push(`${path}: ${failure}`);
+    }
+  }
+  if (failures.length) {
+    for (const failure of failures) console.error(`FAIL encoded payload check: ${failure}`);
+    return false;
+  }
+  console.log('PASS encoded payload check');
   return true;
 }
 
@@ -3233,6 +3309,11 @@ function main() {
   if (selection.jsonlFiles.length === 0) {
     console.log('PASS jsonl syntax check skipped: no jsonl change');
   } else if (!runJsonlSyntaxCheck(root, selection.jsonlFiles)) {
+    process.exitCode = 1;
+  }
+  if (selection.encodingFiles.length === 0) {
+    console.log('PASS encoded payload check skipped: no b64 or hex change');
+  } else if (!runEncodedPayloadCheck(root, selection.encodingFiles)) {
     process.exitCode = 1;
   }
   if (selection.xmlFiles.length === 0) {
