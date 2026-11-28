@@ -284,10 +284,17 @@ with the reason: no live node in that owner (join one), no node advertising the
 caps (the fix names the in-scope node missing the fewest and prints its
 profile-preserving rejoin with the missing caps added — the same command
 `status`/`list` annotate on the pending job, `--watch` included on the
-standalone path), or no node with a local `gh` login (`gh auth login`,
+standalone path), no measured free slot, or no node with a local `gh` login
+(`gh auth login`,
 then the `--probe-auth` beat the fix prints with the blocked node's id and
 session — `phm node beat` needs both, so the plan names them rather than
-leaving a bare `--probe-auth` that fails as missing-flag). A `session-expired` error — from `beat`,
+leaving a bare `--probe-auth` that fails as missing-flag). A capacity block
+names what actually refuses the job: a measured-full host says it has no free
+job slots; a measured hold names the hold (memory or disk pressure,
+unmeasured); and capacity the router cannot see — a missing, stale,
+future-dated or conflicting sample, or an unattributed live claim — reads
+"free slots are unknown, not zero" and points at `phm node beat --watch` or
+`--capacity "$(phm node measure)"`, never "no free job slots". A `session-expired` error — from `beat`,
 `pull` or a claim verb (`renew`, `complete`, `release`) — means the node's
 session lapsed: its `fix` prints the rejoin command,
 carrying the node's last advertised owner scopes, caps and slots while the

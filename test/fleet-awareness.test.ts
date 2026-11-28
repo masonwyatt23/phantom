@@ -158,6 +158,42 @@ test.each(['memory-pressure', 'disk-pressure', 'memory-unmeasured', 'disk-unmeas
   expect(nodes.claim(f.state.leader!, f.state.nodes[1]!, 'job')).toBeNull();
 });
 
+test('an unplaced job names unmeasured capacity as unknown, never "no free job slots"', () => {
+  const f = fixture();
+  const n = f.add('node');
+  f.enqueue();
+  // The session stays live on plain beats but the capacity sample ages out:
+  // the host's free slots are unknown, not zero.
+  f.advance(2 * 3000 + 1);
+  f.run('beat', ['--node', 'node', '--session', String(n.session)]);
+  const [route] = f.plan();
+  expect(route?.nodeId).toBeNull();
+  expect(route?.fix).toContain('unknown, not zero');
+  expect(route?.fix).not.toContain('no free job slots');
+  expect(route?.fix).toContain('phm node beat --watch');
+});
+
+test('an unplaced job names a measured capacity hold instead of exhausted slots', () => {
+  const f = fixture();
+  f.add('node', { slots: 0, held: 'memory-pressure' });
+  f.enqueue();
+  const [route] = f.plan();
+  expect(route?.nodeId).toBeNull();
+  expect(route?.fix).toContain('memory pressure');
+  expect(route?.fix).not.toContain('no free job slots');
+});
+
+test('a genuinely full host keeps the measured-full fix, including the shared host budget', () => {
+  const f = fixture();
+  f.add('w1', { hostId: 'mac', slots: 1 });
+  f.add('w2', { hostId: 'mac', slots: 1 });
+  f.enqueue('j1'); f.enqueue('j2');
+  // j1 reserves the host's only slot; j2 sees every in-scope node full.
+  const routes = f.plan();
+  expect(routes.map(r => r.nodeId)).toEqual(['w1', null]);
+  expect(routes[1]?.fix).toBe("Nodes owned by 'mason' have no free job slots. Wait for work to finish or memory headroom to recover.");
+});
+
 test('accepted witness boundaries weight observed latency and discard expired or incomplete samples', () => {
   const f = fixture(); const slow = f.add('a-slow', { slots: 1 });
   f.enqueue('slow'); const first = new DriveNodes(f.store, { now: f.now }).pull(slow)!;
