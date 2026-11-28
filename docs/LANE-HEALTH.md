@@ -94,7 +94,10 @@ running count, queued count and hold state. The file is read under the
 resolved runs directory (`ASHLR_RUNS_DIR`, else `~/.ashlr-runs`), the same
 override the other fleet readers honor. These fields are null when the
 file is more than 15 minutes old or dated after report time. The configured
-target remains visible.
+target remains visible. Only lane rows produce lanes: the file's fleet-wide
+keys (`hard_cap`, `last_change_by`), its optional `lanes` wrapper and any
+entry that is not a lane-shaped object are metadata, never a lane — they
+report no row rather than a phantom `unknown` lane.
 
 The `idle_with_work` verdict requires a positive lane target, queued work,
 zero running workers, no hold and remaining quota in every observed window.
