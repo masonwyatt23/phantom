@@ -26,10 +26,23 @@ function text(r: NodeBridgeReport, fix: string | null): string {
 export async function cmdNodeBridge(args: string[]): Promise<number> {
   if (args.includes('--help') || args.includes('-h')) { console.log(`${USAGE}\nDry run by default: lists ready.tsv rows that would offload to a node and why each stays local. --apply runs one claim/reconcile pass (needs ${await bridgeConfigLabel()} enabled).\nAll node commands: phm node --help`); return 0; }
   const json = args.includes('--json');
-  const ownerAt = args.indexOf('--owner');
-  const owner = ownerAt >= 0 ? args[ownerAt + 1] : undefined;
-  const known = args.every((a, i) => ['--json', '--apply', '--owner'].includes(a) || (i === ownerAt + 1 && ownerAt >= 0));
-  if (!known || (ownerAt >= 0 && (!owner || owner.startsWith('--')))) {
+  // --owner takes the scope as --owner <scope> or --owner=<scope> — the =
+  // spelling every other valued phm node flag already takes. It may appear
+  // once across spellings, an empty scope is no scope, and the boolean flags
+  // never take a value.
+  let owner: string | undefined, bad = false;
+  for (let i = 0; i < args.length && !bad; i++) {
+    const arg = args[i]!;
+    if (arg === '--json' || arg === '--apply') continue;
+    const eq = arg.indexOf('=');
+    const name = eq === -1 ? arg : arg.slice(0, eq);
+    const inline = eq === -1 ? undefined : arg.slice(eq + 1);
+    if (name !== '--owner') { bad = true; break; }
+    const value = inline ?? args[++i];
+    if (owner !== undefined || value === undefined || value === '' || (inline === undefined && value.startsWith('--'))) { bad = true; break; }
+    owner = value;
+  }
+  if (bad) {
     if (json) console.log(JSON.stringify({ schemaVersion: 1, command: 'bridge', error: { code: 'usage', message: USAGE, fix: 'Run: phm node bridge --help' } }));
     else console.error(USAGE);
     return 2;

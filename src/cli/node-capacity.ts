@@ -26,7 +26,13 @@ const MAX_INPUT = 1024 * 1024;
 
 function flagValues(args: string[], name: string): string[] {
   const out: string[] = [];
-  for (let i = 0; i < args.length; i++) if (args[i] === name && i + 1 < args.length) out.push(args[++i]!);
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!;
+    if (arg === name) { if (i + 1 < args.length) out.push(args[++i]!); continue; }
+    // --flag=value spells the same flag as --flag value — the form the fleet
+    // and pool parsers already take — so both reach the same downstream checks.
+    if (arg.startsWith(`${name}=`)) out.push(arg.slice(name.length + 1));
+  }
   return out;
 }
 
@@ -34,18 +40,25 @@ function flagValues(args: string[], name: string): string[] {
  * more than once (route's --capacity documents and --exhausted lists); every
  * other valued flag takes exactly one value, so a repeat is a usage error
  * rather than a silently ignored second file — the same rule self-update's
- * flag table already follows. */
+ * flag table already follows. --flag=value counts as the same flag: the name
+ * before the first '=' is what the tables match, a repeat across spellings is
+ * still a duplicate, and a bare flag with '=' (--json=x) stays unknown. */
 function validate(args: string[], valued: string[], bare: string[], repeatable: readonly string[] = []): string | null {
   const seen = new Set<string>();
   for (let i = 0; i < args.length; i++) {
     const arg = args[i]!;
-    if (valued.includes(arg)) {
-      if (i + 1 >= args.length || args[i + 1]!.startsWith('--')) return `${arg} needs a value`;
-      if (!repeatable.includes(arg)) {
-        if (seen.has(arg)) return `${arg} was given more than once`;
-        seen.add(arg);
+    const eq = arg.indexOf('=');
+    const name = eq === -1 ? arg : arg.slice(0, eq);
+    if (valued.includes(name)) {
+      if (eq === -1) {
+        if (i + 1 >= args.length || args[i + 1]!.startsWith('--')) return `${name} needs a value`;
+        i++;
       }
-      i++; continue;
+      if (!repeatable.includes(name)) {
+        if (seen.has(name)) return `${name} was given more than once`;
+        seen.add(name);
+      }
+      continue;
     }
     if (!bare.includes(arg)) return `unknown argument ${arg}`;
   }
