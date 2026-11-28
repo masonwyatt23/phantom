@@ -2399,6 +2399,27 @@
  *     scrubbed and capped, and items emit only for the fleet's own
  *     repository since the hub describes this install's learned
  *     memory;
+ *   - the ACE vision playbook's lesson journal: every learned lesson —
+ *     strategist delta-curated strategy notes and leader-apply's
+ *     Mason-veto records — appends one PlaybookEntry line to
+ *     ~/.ashlr/vision/playbook.jsonl, whose only readers were the
+ *     playbook module's own render/curate paths, so a judge channel
+ *     the fleet manager renders into every judgeProposal prompt while
+ *     no production writer exists, a store that keeps absorbing veto
+ *     lessons while foundry.acePlaybook gates every reader off, a
+ *     retired audit trail that grows past the whole live capacity
+ *     with nothing ever deleting a row, and a file with no size cap
+ *     produced evidence only inside a JSONL nobody folded
+ *     (visionPlaybookBacklogItems below). Rows count only under the
+ *     same six-field isValidEntry bar every reader enforces; the
+ *     judge-starved and dead-majority cells emit only on an
+ *     untruncated whole-file read since a zero or a ratio cannot be
+ *     proven from a tail slice, unread-store needs only proof rows
+ *     exist so it still fires with counts as lower bounds, oversized
+ *     keys off the exact file size, the flag is read through the same
+ *     loadConfigReadOnly cast the three consumer call sites use, and
+ *     items emit only for the fleet's own repository since the
+ *     playbook describes this install's learned lessons;
  *
  * Items land in the operator backlog (`appendUserBacklogItems`), which dedupes
  * by id and title: running discovery again adds only what is new and
@@ -2594,6 +2615,7 @@ import { promptVariantBacklogItems } from './prompt-variant-backlog.js';
 import { stewardBacklogItems } from './steward-backlog.js';
 import { modelRadarRunBacklogItems } from './model-radar-run-backlog.js';
 import { genomeHubBacklogItems } from './genome-hub-backlog.js';
+import { visionPlaybookBacklogItems } from './vision-playbook-backlog.js';
 
 export interface DiscoverDeps {
   gh?: AutomationGh;
@@ -5422,6 +5444,30 @@ export async function discoverBacklog(repo: string, deps: DiscoverDeps = {}): Pr
   // repository inherits the items since the hub describes this
   // install's learned memory.
   await feed('genomeHubBacklogItems', () => genomeHubBacklogItems({ repo }));
+  // ACE vision playbook journal (~/.ashlr/vision/playbook.jsonl —
+  // playbookPath resolves it under the user's home directly, not via
+  // $ASHLR_HOME): addDelta is the only append API — the strategist's
+  // acePlaybook-gated block writes strategy deltas and runs the only
+  // curate call, leader-apply's vetoPlaybook writes strategy deltas
+  // on every Mason veto ungated — while renderPlaybook('strategy')
+  // and renderPlaybook('judge') feed the strategist prompt and the
+  // manager's JUDGE_SYSTEM rubric only under the same flag, and
+  // addDelta('judge') appears only in tests. Until now the journal's
+  // only readers were the playbook module itself, so the rendered-
+  // but-unwritten judge channel, the write-only store while the flag
+  // is off, the retired audit rows that grow past the whole live
+  // capacity with nothing ever deleting them, and a file with no
+  // size cap produced evidence only inside a JSONL nobody folded
+  // (visionPlaybookBacklogItems below). Rows count only under the
+  // same six-field isValidEntry bar every reader enforces;
+  // judge-starved and dead-majority emit only on an untruncated
+  // whole-file read, unread-store fires on any proven row with
+  // counts as lower bounds, oversized keys off the exact file size,
+  // the flag read uses the same loadConfigReadOnly cast the consumer
+  // call sites use, and only the fleet's own repository inherits the
+  // items since the playbook describes this install's learned
+  // lessons.
+  await feed('visionPlaybookBacklogItems', () => visionPlaybookBacklogItems({ repo }));
   return { items, errors };
 }
 
