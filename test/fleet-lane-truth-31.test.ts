@@ -188,6 +188,43 @@ it('refuses a personal-home symlink into the company home', async () => {
   expect(await defaultLaneTruthReaders(home, now).meters()).toEqual([]);
 });
 
+it('skips slots.json fleet keys and non-lane entries instead of reporting a phantom lane', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'lane-truth-meta-')); dirs.push(home);
+  const queue = join(home, '.ashlr-runs/queue');
+  await mkdir(queue, { recursive: true });
+  const path = join(queue, 'slots.json');
+  const mtime = new Date(now);
+  const expected = [
+    { lane: 'claude', target: 1, running: null, queued: null, held: null },
+    { lane: 'codex-personal', target: 2, running: 1, queued: 3, held: false },
+  ];
+  // The live slots.json shape: lane rows beside hard_cap and last_change_by,
+  // plus entries that are metadata or junk, never lanes.
+  await writeFile(path, JSON.stringify({
+    claude: { target: 1 },
+    'codex-personal': { target: 2, running: 1, queued: 3, held: false },
+    hard_cap: 18,
+    last_change_by: 'ADAPTIVE 2026-10-31 backoff:diskguard',
+    'not_a_lane': { target: 7, running: 0, queued: 9, held: true },
+    'UPPER': { target: 1 },
+    gemini: 'text',
+    grok: [1, 2],
+    zai: null,
+  }));
+  await utimes(path, mtime, mtime);
+  const readers = defaultLaneTruthReaders(home, now);
+  expect(await readers.lanes()).toEqual(expected);
+  expect((await readLaneTruth(readers, now)).lanes.map(row => row.lane)).toEqual(['claude', 'codex-personal']);
+  // The lanes-wrapped form reads the inner map; sibling metadata stays out.
+  await writeFile(path, JSON.stringify({
+    lanes: { claude: { target: 1 }, 'codex-personal': { target: 2, running: 1, queued: 3, held: false } },
+    hard_cap: 18,
+    last_change_by: 'ADAPTIVE 2026-10-31 backoff:diskguard',
+  }));
+  await utimes(path, mtime, mtime);
+  expect(await defaultLaneTruthReaders(home, now).lanes()).toEqual(expected);
+});
+
 it('the default lanes reader honors ASHLR_RUNS_DIR under the real home only', async () => {
   const runs = await mkdtemp(join(tmpdir(), 'lane-truth-runs-')); dirs.push(runs);
   const relocated = await mkdtemp(join(tmpdir(), 'lane-truth-fixture-')); dirs.push(relocated);

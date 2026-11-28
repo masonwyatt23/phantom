@@ -18,6 +18,8 @@ import { lstat, open, readdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
+import { GLOBAL_SLOT_KEYS } from './runs-lane-targets.js';
+
 export interface LaneState {
   lane: string;
   target: number | null;
@@ -50,7 +52,12 @@ export const LANE_TRUTH_REASONS: Record<LaneVerdict, string> = {
   unknown: 'lane or meter evidence is missing or older than the freshness boundary',
 };
 
-const object = (v: unknown): Record<string, unknown> => v !== null && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : {};
+const isRecord = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === 'object' && !Array.isArray(v);
+const object = (v: unknown): Record<string, unknown> => isRecord(v) ? v : {};
+/** Lane ids the report can name; anything else stays off the wire as 'unknown'. */
+const LANE_NAME_RE = /^[a-z][a-z0-9-]{1,40}$/;
+/** slots.json top-level keys that are fleet metadata or the wrapped lane map, never lane rows. */
+const SLOT_META_KEYS: ReadonlySet<string> = new Set([...GLOBAL_SLOT_KEYS, 'lanes']);
 const count = (v: unknown): number | null => typeof v === 'number' && Number.isSafeInteger(v) && v >= 0 ? v : null;
 const instant = (v: unknown): string | null => typeof v === 'string' && Number.isFinite(Date.parse(v)) ? new Date(v).toISOString() : null;
 const fresh = (v: string, now: number): boolean => Number.isFinite(now) && Date.parse(v) <= now && now - Date.parse(v) <= LANE_TRUTH_MAX_AGE_MS;
@@ -110,7 +117,7 @@ function analyzeLaneTruth(lanes: readonly LaneState[], meters: readonly MeterSam
     }
     // Deliberately omit free-form hold reasons, transcripts and account metadata.
     return {
-      row: { lane: /^[a-z][a-z0-9-]{1,40}$/.test(lane.lane) ? lane.lane : 'unknown', target, running, queued, held: typeof lane.held === 'boolean' ? lane.held : null, verdict },
+      row: { lane: LANE_NAME_RE.test(lane.lane) ? lane.lane : 'unknown', target, running, queued, held: typeof lane.held === 'boolean' ? lane.held : null, verdict },
       meter: latest,
     };
   });
@@ -176,16 +183,23 @@ export function defaultLaneTruthReaders(home = homedir(), now = Date.now()): Lan
         const file = await boundedRead(join(runsDir, 'queue', 'slots.json'), 64 * 1024);
         const raw = object(JSON.parse(file.text));
         const current = fresh(new Date(file.mtime).toISOString(), now);
-        return Object.entries(object(raw.lanes ?? raw)).filter(([lane]) => lane !== 'hard_cap').map(([lane, value]) => {
-          const row = object(value);
-          return {
-            lane,
-            target: count(row.target),
-            running: current ? count(row.running) : null,
-            queued: current ? count(row.queued) : null,
-            held: current && typeof row.held === 'boolean' ? row.held : null,
-          };
-        });
+        // slots.json carries fleet-wide keys beside the lane map (hard_cap,
+        // last_change_by) and may wrap lanes under `lanes`; only record-valued
+        // lane-id keys are lanes — a scalar or oddly named entry is metadata,
+        // never a row (it would surface as a phantom 'unknown' lane).
+        const map = isRecord(raw.lanes) ? raw.lanes : raw;
+        return Object.entries(map)
+          .filter(([lane, value]) => !SLOT_META_KEYS.has(lane) && LANE_NAME_RE.test(lane) && isRecord(value))
+          .map(([lane, value]) => {
+            const row = object(value);
+            return {
+              lane,
+              target: count(row.target),
+              running: current ? count(row.running) : null,
+              queued: current ? count(row.queued) : null,
+              held: current && typeof row.held === 'boolean' ? row.held : null,
+            };
+          });
       } catch { return []; }
     },
     async meters() {
