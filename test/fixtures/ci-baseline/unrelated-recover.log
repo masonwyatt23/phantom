@@ -1,0 +1,17 @@
+TAP version 13
+# tests 12
+# suites 0
+# pass 12
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 843
+recover note scan-capped kept=30
+recover skip pr=11 reason=in-progress check=Merge Gate
+recover skip pr=23 reason=own-failure check=Fast gate (typecheck + affected tests)
+recover skip pr=37 reason=protected-job check=Merge Gate
+recover rerun pr=42 sha=abc1234 run=98765 attempt=1 check=Merge Gate
+recover result rerun pr=42 ok=false status=403
+recover done actions=0
+##[error]Process completed with exit code 1.

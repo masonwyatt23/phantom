@@ -1,0 +1,14 @@
+preflight plan: fallback (no prior green full run), union 4, run 3, not_run 1
+[test-ci-progress] collected 3 module(s)
+[test-ci-progress] start test/authority-codeowners-310b.test.ts
+[test-ci-progress] case-completed state=failed authority-codeowners-310b.test.ts completed=2
+[test-ci-progress] end failed test/authority-codeowners-310b.test.ts
+[test-ci-progress] start test/ci-fast-inputs.test.ts
+[test-ci-progress] end passed test/ci-fast-inputs.test.ts
+[test-ci-progress] start test/queue-gen.test.ts
+[test-ci-progress] end failed test/queue-gen.test.ts
+[test-ci-progress] end skipped test/quarantined-lane.test.ts
+preflight run: red 2, unparsed false
+create [P0 fix-forward] RQ-PREFLIGHT-test-authority-codeowners-310b.test.ts
+comment 6404
+##[error]Process completed with exit code 1.

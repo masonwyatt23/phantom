@@ -602,7 +602,19 @@ companion smoke's
 `scripts/companion-workflow-smoke.mjs > (companion-smoke) <check-id>`
 rows from the smoke's `FAIL <check-id>: <detail>` verdict lines --
 counted only inside a log carrying the `N pass, N warn, N fail, N
-skip` tally whose fail count equals the FAIL rows -- plus
+skip` tally whose fail count equals the FAIL rows -- the scheduled
+unrelated-PR recovery script's
+`.github/scripts/ci-unrelated-recover.mjs > (unrelated-recover)
+<reason>` rows from its `recover abort|refuse reason=<slug>` verdicts
+and `> (unrelated-recover) mutation-<status>` rows from fatal
+`recover result ... ok=false status=<s>` lines (status 0, 401, 403 or
+5xx only, matching the script's own fatal set), the scheduled
+preflight's `<file> > (preflight)` rows from the progress reporter's
+`[test-ci-progress] end failed <file>` module verdicts -- counted only
+inside a log carrying the run step's own `preflight run: red <n>,
+unparsed <bool>` closing line -- and the whitelisted ci-script-gate
+identities including the weekly release-flow-metrics recorder's
+`.github/scripts/ci-release-metrics.mjs > (release-metrics)`, plus
 summaries. `auditExceptions` is the optional
 `DependencyAuditException[] | null` list (`{id, package, graph}` with
 graph `full` or `raycast-production`); `null` leaves npm audit reports
@@ -672,7 +684,15 @@ either. The companion smoke's dependency set is the closed input list
 `.github/workflows/companion-smoke.yml` -- the checks exercise
 published companions and the ref's built `dist/` graph, which has no
 enumerable closure -- and the harness ambient set does not apply to
-it either. Parenthesized
+it either. The unrelated-PR recovery script's dependency set is the
+closed input list `.github/scripts/ci-unrelated-recover.mjs` plus
+`.github/workflows/unrelated-pr-recover.yml` -- the script is
+REST-only, so no import closure reaches its real inputs -- and the
+harness ambient set does not apply to it either. The preflight
+`(preflight)` identities are the exception among parenthesized gate
+names: each names a real suite module, so its dependency set is the
+ordinary vitest one -- the file's import closure plus the harness
+ambient set. Parenthesized
 gate identities other than `(suite)` can never resolve a master pass or
 flake classification, even when their file is a test path a green-module
 line could otherwise match. Groups also emit from master evidence

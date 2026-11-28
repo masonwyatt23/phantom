@@ -486,17 +486,27 @@ invocation or one whitelisted gate script, all gate lines naming the
 same file: `ci-fetch-range`, `ci-source-binding`, `ci-site-lane`,
 `ci-mac-rotation`, `ci-dep-graph`, `ci-fast-select`, `ci-fast-inputs`,
 `ci-green-reuse` and `ci-mcp-selection` group under
-`.github/scripts/<script> > (<gate>)`. Mixed bash, `uses:` actions,
+`.github/scripts/<script> > (<gate>)`, and the weekly
+release-flow-metrics schedule's pure
+`node .github/scripts/ci-release-metrics.mjs --write ...` step groups
+under `.github/scripts/ci-release-metrics.mjs > (release-metrics)`.
+Mixed bash, `uses:` actions,
 non-whitelisted scripts and ambiguous multi-script steps stay
 unattributed, and a `not ok` or vitest `FAIL` line in the step's own
 output means the companion test runner owns the failure -- the gate
 group is suppressed. Each gate's inputs are the script, its import
-closure and `.github/workflows/ci.yml` (the step definition), with no
+closure and the workflow file that defines its step (`.github/workflows/ci.yml`
+for the ci.yml gates, `.github/workflows/release-flow-metrics.yml` for
+the metrics recorder), with no
 vitest harness ambient set; like the other non-test identities these
 groups classify `shared-baseline`, `pr-caused` or `unknown` -- never
 `probable-flake`. Scripts whose pure steps only appear in jobs the
 analyzer's evidence never sees (macOS/Windows lanes, release
-pipelines, merge-group-only attribution) are not listed.
+pipelines, merge-group-only attribution) are not listed, and neither
+is `preflight-fixer.mjs`: its report step exits 1 by design whenever
+predicted reds exist, so step attribution would emit a phantom script
+group beside the real per-file red groups -- its reds parse through
+the progress-reporter shape below instead.
 
 The `Install dependencies` steps run a bare `npm ci` (with or without
 `--ignore-scripts`/`--no-audit`/`--no-fund`), so a broken manifest or
@@ -593,6 +603,42 @@ companions plus the ref's built `dist/` graph, which has no enumerable
 closure. Like the other non-test identities these groups can never
 resolve through a vitest pass line: `shared-baseline`, `pr-caused` or
 `unknown` -- never `probable-flake`.
+
+Two more scheduled ops workflows get dedicated shapes. The
+unrelated-pr-recover workflow (cron `*/20`) sparse-checks out
+`.github/scripts/ci-unrelated-recover.mjs` and runs it under
+`set -euo pipefail` -- a step shape the ci-script-gate parser
+disqualifies on sight -- so the script's own verdict lines are the
+evidence: `recover abort reason=<slug>` and `recover refuse
+reason=<slug>` group per reason under `.github/scripts/
+ci-unrelated-recover.mjs > (unrelated-recover) <slug>`, and
+`recover result <kind> pr=<n> ok=false status=<s>` groups per status
+as `> (unrelated-recover) mutation-<status>` only for the fatal set
+the script itself applies (0, 401, 403, 5xx; 404 and 422 results are
+logged but never fail the run). `recover skip`/`rerun`/`note`/`done`
+lines are progress, not verdicts. The dependency set is a closed
+input list (the script and its workflow step): the script is
+REST-only, so no import closure reaches its real inputs.
+
+The preflight-fixer workflow (cron `37 5,11,17,23`) runs its predicted
+subset through `preflight-fixer.mjs run`, which spawns test-ci.mjs
+with `--reporter=json --outputFile` -- deliberately not the default
+reporter, so no vitest `FAIL` lines reach the job log. The only
+per-module failure evidence is the private progress reporter's
+`[test-ci-progress] end failed <file>` verdict, which counts only
+inside a log carrying the run step's own closing `preflight run: red
+<n>, unparsed <bool>` line -- the same progress lines appear in every
+test-ci.mjs run across ci.yml, so without that verdict they are not
+preflight evidence and a truncated or killed run stays unparsed. Each
+failed module groups as `<file> > (preflight)` with the ordinary
+vitest dependency set (the file's import closure plus the harness
+ambient set): these are real suite reds observed on master, so like
+other parenthesized identities they classify `shared-baseline`,
+`pr-caused` or `unknown` -- never `probable-flake`. The
+`case-completed state=failed <basename>` lines carry only a basename
+and stay unparsed, as do the plan/skipped selection lines and the
+report step's issue actions; a `preflight run: red 0, unparsed true`
+verdict with no module evidence honestly stays unparsed.
 
 Two unaffected fresh PRs at distinct head commits sharing a failure produce
 `queue-master-fix` and a ready brief. PRs at the same commit remain visible in

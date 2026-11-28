@@ -587,6 +587,10 @@ const STATIC_FAILURE_INPUTS: Record<string, readonly string[]> = {
   '.github/scripts/ci-fast-inputs.mjs': ['.github/workflows/ci.yml'],
   '.github/scripts/ci-green-reuse.mjs': ['.github/workflows/ci.yml'],
   '.github/scripts/ci-mcp-selection.mjs': ['.github/workflows/ci.yml'],
+  // The release-flow metrics recorder runs on its own weekly schedule, not
+  // ci.yml: the workflow file that wires METRICS_ROLE, the token and the
+  // --write target is its direct input alongside the script's closure.
+  '.github/scripts/ci-release-metrics.mjs': ['.github/workflows/release-flow-metrics.yml'],
   // The memory benchmark gate runs `tsx scripts/benchmark-memory.ts`
   // (npm run bench:memory -- --check): its import closure covers the
   // benchmark, its floors file and the whole src/core/memory
@@ -1359,6 +1363,13 @@ const CI_SCRIPT_GATES: Record<string, string> = {
   'ci-fast-inputs.mjs': '(fast-inputs)',
   'ci-green-reuse.mjs': '(green-reuse)',
   'ci-mcp-selection.mjs': '(mcp-selection)',
+  // The weekly release-flow-metrics schedule runs this script as a pure
+  // single-command step, so an infrastructure exit groups under it. The
+  // preflight-fixer script is deliberately absent: its report step exits 1
+  // by design whenever predicted reds exist, so gate attribution would
+  // emit a phantom script group beside the real per-file red groups --
+  // its reds parse through the progress-reporter shape below instead.
+  'ci-release-metrics.mjs': '(release-metrics)',
 };
 const CI_SCRIPT_GATE_FILES = new Set(Object.keys(CI_SCRIPT_GATES).map(base => `.github/scripts/${base}`));
 const CI_STEP_GROUP = /^##\[group\]Run(?:\s+(.*))?$/;
@@ -2101,6 +2112,103 @@ function parseCompanionSmokeFailures(log: string): Failure[] {
   return out.length === declaredFail ? out : [];
 }
 
+// The scheduled unrelated-pr-recover workflow
+// (.github/workflows/unrelated-pr-recover.yml, cron */20) sparse-checks
+// out the recovery script and its test, then runs them under
+// `set -euo pipefail` in one step -- a shape the ci-script-gate parser
+// disqualifies on sight. When the script itself fails it prints its own
+// verdict lines and exits nonzero: `recover abort reason=<slug>` or
+// `recover refuse reason=<slug>` for unreadable state, rules, pulls or
+// master checks (exit 1/2), and `recover result <kind> pr=<n>
+// ok=false status=<s>` for a failed gh mutation, fatal only on status 0
+// (transport), 401, 403 or any 5xx -- the same fatal set the script
+// itself applies; 404 and 422 results are logged but never fail the
+// run, and `recover skip`/`rerun`/`note`/`done` lines are progress, not
+// verdicts. Each reason or fatal status groups under the script as
+// `.github/scripts/ci-unrelated-recover.mjs > (unrelated-recover)
+// <slug>` / `> (unrelated-recover) mutation-<status>`: the slug is the
+// unit a master fix restores (an unreadable-rules abort and a 403
+// mutation need different repairs), and the reason vocabulary is the
+// script's own closed set, so the row shape -- not an enum -- decides
+// what parses. Without these shapes a red recovery run leaves every
+// open PR unknown and queues nothing. Like the other non-test
+// identities these groups can never resolve through a vitest pass
+// line: shared-baseline, pr-caused or unknown -- never probable-flake.
+const UNRELATED_RECOVER_FILE = '.github/scripts/ci-unrelated-recover.mjs';
+const UNRELATED_RECOVER_PREFIX = '(unrelated-recover)';
+const UNRELATED_RECOVER_MAX = 16;
+const RECOVER_ABORT = /^recover (?:abort|refuse) reason=([a-z0-9][a-z0-9-]{0,62})$/;
+const RECOVER_RESULT = /^recover result \S+ pr=\d+ ok=false status=(\d{1,3})$/;
+
+function parseUnrelatedRecoverFailures(log: string): Failure[] {
+  const out: Failure[] = [];
+  const seen = new Set<string>();
+  for (const line of lines(log)) {
+    if (out.length >= UNRELATED_RECOVER_MAX) break;
+    const abort = RECOVER_ABORT.exec(line);
+    const result = abort === null ? RECOVER_RESULT.exec(line) : null;
+    let names: string | null = null;
+    if (abort !== null) {
+      names = `${UNRELATED_RECOVER_PREFIX} ${abort[1]!}`;
+    } else if (result !== null) {
+      const status = Number(result[1]);
+      if (!(status === 0 || status === 401 || status === 403 || status >= 500)) continue;
+      names = `${UNRELATED_RECOVER_PREFIX} mutation-${status}`;
+    }
+    if (names === null || seen.has(names)) continue;
+    seen.add(names);
+    out.push({ file: UNRELATED_RECOVER_FILE, names, testId: `${UNRELATED_RECOVER_FILE} > ${names}`, excerpt: clean(line) });
+  }
+  return out;
+}
+
+// The scheduled preflight-fixer workflow
+// (.github/workflows/preflight-fixer.yml, cron 37 5,11,17,23) runs the
+// predicted-reds subset through `node .github/scripts/preflight-fixer.mjs
+// run`, which spawns scripts/test-ci.mjs with `--reporter=json
+// --outputFile` -- deliberately NOT the default reporter, so no vitest
+// FAIL lines reach the log. The only per-module failure evidence is the
+// private progress reporter's stderr verdict:
+//   [test-ci-progress] end failed test/<file>.test.ts
+// emitted once per module whose state ended 'failed' (a case failure
+// or a suite-load failure -- the reporter cannot tell them apart, so
+// both group at module granularity). The same progress lines appear in
+// every test-ci.mjs run across ci.yml, so they count only inside a log
+// carrying the run step's own closing verdict `preflight run: red <n>,
+// unparsed <bool>` -- printed after the spawned runs finish, it proves
+// this is a completed preflight prediction, and a truncated or killed
+// run without it stays unparsed. Each failed module groups as
+// `<file> > (preflight)`: a real suite red observed on master, so the
+// dependency set is the ordinary vitest one -- the file's import
+// closure plus the harness ambient set -- and like other parenthesized
+// identities it can never resolve through a vitest pass line:
+// shared-baseline, pr-caused or unknown -- never probable-flake. The
+// `case-completed state=failed <basename>` lines carry only a basename
+// and stay unparsed, as do `preflight plan:`/`preflight skipped:`/
+// `preflight base:` lines (selection evidence, not failure verdicts)
+// and the report step's `create`/`comment` issue actions.
+const PREFLIGHT_NAMES = '(preflight)';
+const PREFLIGHT_MAX = 32;
+const PREFLIGHT_RUN_VERDICT = /^preflight run: red \d+, unparsed (?:true|false)$/;
+const PREFLIGHT_MODULE_FAILED = /^\[test-ci-progress\] end failed ((?:test|src\/web-ui)\/[^\s>]+\.test\.[cm]?[jt]sx?)$/;
+
+function parsePreflightFailures(log: string): Failure[] {
+  const output = lines(log);
+  if (!output.some(line => PREFLIGHT_RUN_VERDICT.test(line))) return [];
+  const out: Failure[] = [];
+  const seen = new Set<string>();
+  for (const line of output) {
+    if (out.length >= PREFLIGHT_MAX) break;
+    const match = PREFLIGHT_MODULE_FAILED.exec(line);
+    if (match === null) continue;
+    const file = match[1]!;
+    if (posix.normalize(file) !== file || file.includes('..') || posix.isAbsolute(file) || seen.has(file)) continue;
+    seen.add(file);
+    out.push({ file, names: PREFLIGHT_NAMES, testId: `${file} > ${PREFLIGHT_NAMES}`, excerpt: clean(line) });
+  }
+  return out;
+}
+
 // The spawned Vitest run's direct repo inputs, shared by both runner
 // identities: the config that collects and times the suites, the
 // mock-compat config and setup files it loads, the lane-membership and
@@ -2131,6 +2239,16 @@ const TEST_RUNNER_INPUTS: Record<string, readonly string[]> = {
 // the script and the workflow step that invokes it.
 const COMPANION_SMOKE_INPUTS: Record<string, readonly string[]> = {
   [COMPANION_SMOKE_FILE]: [COMPANION_SMOKE_FILE, '.github/workflows/companion-smoke.yml'],
+};
+
+// The unrelated-PR recovery gate's failure file is the recovery script
+// itself. It is REST-only -- gh api calls against rules, branches,
+// pulls and check-runs -- so no import closure reaches its real inputs;
+// the dependency set is a closed input list: the script and the
+// workflow step that sparse-checks it out, wires GH_TOKEN/RECOVER_STATE
+// and runs it under `set -euo pipefail`.
+const UNRELATED_RECOVER_INPUTS: Record<string, readonly string[]> = {
+  [UNRELATED_RECOVER_FILE]: [UNRELATED_RECOVER_FILE, '.github/workflows/unrelated-pr-recover.yml'],
 };
 
 export function parseBaselineFailures(log: string, repo?: string, auditExceptions: readonly DependencyAuditException[] | null = []): Failure[] {
@@ -2251,6 +2369,14 @@ export function parseBaselineFailures(log: string, repo?: string, auditException
     result.push(failure);
   }
   for (const failure of parseCompanionSmokeFailures(log)) {
+    if (result.length >= 100) break;
+    result.push(failure);
+  }
+  for (const failure of parseUnrelatedRecoverFailures(log)) {
+    if (result.length >= 100) break;
+    result.push(failure);
+  }
+  for (const failure of parsePreflightFailures(log)) {
     if (result.length >= 100) break;
     result.push(failure);
   }
@@ -2700,7 +2826,7 @@ export async function analyzeCiBaseline(repo: string, gh: CloudGh = defaultCiGh)
       // the dependency manifests, and never read a file's imports, so the
       // dependency set is each gate's closed input list rather than the
       // import closure walk.
-      const flatInputs = LINT_GUARD_INPUTS[failure.names] ?? FIRST_PAINT_INPUTS[failure.names] ?? TEST_RUNNER_INPUTS[failure.names] ?? SECRET_GATE_INPUTS[failure.names] ?? INSTALL_STEP_INPUTS[failure.names] ?? INSTALL_SMOKE_INPUTS[failure.names] ?? BUILD_STEP_INPUTS[failure.file] ?? COMPANION_SMOKE_INPUTS[failure.file];
+      const flatInputs = LINT_GUARD_INPUTS[failure.names] ?? FIRST_PAINT_INPUTS[failure.names] ?? TEST_RUNNER_INPUTS[failure.names] ?? SECRET_GATE_INPUTS[failure.names] ?? INSTALL_STEP_INPUTS[failure.names] ?? INSTALL_SMOKE_INPUTS[failure.names] ?? BUILD_STEP_INPUTS[failure.file] ?? COMPANION_SMOKE_INPUTS[failure.file] ?? UNRELATED_RECOVER_INPUTS[failure.file];
       const deps = flatInputs !== undefined ? new Set<string>(flatInputs) : await dependencies(failure.file);
       // Generated artifacts are produced by the clean-tree job, not the test
       // runner: the vitest harness ambient set cannot stale them, so only

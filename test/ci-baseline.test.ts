@@ -11,7 +11,7 @@ const master = 'a'.repeat(40), head = 'b'.repeat(40), merged = 'c'.repeat(40), s
 const dirs: string[] = [];
 afterEach(() => dirs.splice(0).forEach(d => rmSync(d, { recursive: true, force: true })));
 
-function github(options: { count?: number; sameHead?: boolean; touched?: string; pass?: boolean; stale?: boolean; unknown?: boolean; unreadable?: boolean; imports?: string; merged?: boolean; web?: boolean; suite?: boolean; tsc?: boolean; tap?: boolean; docs?: boolean; generated?: boolean; digest?: boolean; version?: boolean; perf?: boolean; audit?: boolean; auditOsv?: boolean; pack?: boolean; trust?: boolean; trustGate?: boolean; script?: boolean; fastSelect?: boolean; install?: boolean; installSmoke?: boolean; membench?: boolean; lint?: boolean; lintTestFile?: boolean; realio?: boolean; verse?: boolean; flaky?: boolean; gate?: boolean; gateEvidence?: 'fail' | 'pass'; bound?: boolean; boundHead?: string; checkoutRef?: 'self' | 'other' | 'branch' | 'mixed' | 'twice' | 'envonly'; filePass?: boolean; firstPaint?: boolean; firstPaintGate?: boolean; runner?: boolean; build?: boolean; buildHelper?: boolean; smoke?: boolean; masterFixture?: string; tree?: { path: string; type?: string; mode?: string }[]; treeError?: boolean; treeTruncated?: boolean; contents?: Record<string, string>; contentsMiss?: 'error'; contentsError?: string[]; masterJobConclusion?: string; prJobConclusion?: string; extraMasterJob?: string; extraPrJob?: string; runConclusion?: string; masterRunConclusion?: string; noJobs?: boolean } = {}) {
+function github(options: { count?: number; sameHead?: boolean; touched?: string; pass?: boolean; stale?: boolean; unknown?: boolean; unreadable?: boolean; imports?: string; merged?: boolean; web?: boolean; suite?: boolean; tsc?: boolean; tap?: boolean; docs?: boolean; generated?: boolean; digest?: boolean; version?: boolean; perf?: boolean; audit?: boolean; auditOsv?: boolean; pack?: boolean; trust?: boolean; trustGate?: boolean; script?: boolean; fastSelect?: boolean; install?: boolean; installSmoke?: boolean; membench?: boolean; lint?: boolean; lintTestFile?: boolean; realio?: boolean; verse?: boolean; flaky?: boolean; gate?: boolean; gateEvidence?: 'fail' | 'pass'; bound?: boolean; boundHead?: string; checkoutRef?: 'self' | 'other' | 'branch' | 'mixed' | 'twice' | 'envonly'; filePass?: boolean; firstPaint?: boolean; firstPaintGate?: boolean; runner?: boolean; build?: boolean; buildHelper?: boolean; smoke?: boolean; recover?: boolean; preflight?: boolean; masterFixture?: string; tree?: { path: string; type?: string; mode?: string }[]; treeError?: boolean; treeTruncated?: boolean; contents?: Record<string, string>; contentsMiss?: 'error'; contentsError?: string[]; masterJobConclusion?: string; prJobConclusion?: string; extraMasterJob?: string; extraPrJob?: string; runConclusion?: string; masterRunConclusion?: string; noJobs?: boolean } = {}) {
   const calls: string[][] = [];
   const gh: CloudGh = async args => {
     calls.push(args);
@@ -65,7 +65,7 @@ function github(options: { count?: number; sameHead?: boolean; touched?: string;
         return success(gateLog);
       }
       const isMaster = endpoint.includes('/jobs/10/') || endpoint.includes('/jobs/30/');
-      const name = options.unknown && !isMaster ? 'unknown' : isMaster && options.masterFixture !== undefined ? options.masterFixture : isMaster && options.pass ? (options.filePass ? 'pass-file' : options.web ? 'web-pass' : 'pass') : options.suite ? 'suite-shared' : options.tsc ? 'tsc-shared' : options.tap ? 'tap-shared' : options.docs ? 'docs-shared' : options.generated ? 'generated-shared' : options.digest ? 'digest-shared' : options.version ? 'version-shared' : options.perf ? 'perf-shared' : options.audit ? 'audit-shared' : options.auditOsv ? 'audit-osv' : options.pack ? 'pack-shared' : options.trust ? 'trust-shared' : options.trustGate ? 'trust-gate-shared' : options.fastSelect ? 'script-fast-select' : options.install ? 'install-shared' : options.installSmoke ? 'install-smoke-shared' : options.script ? 'script-shared' : options.membench ? 'membench-shared' : options.lint ? 'lint-shared' : options.lintTestFile ? 'lint-test-file' : options.realio ? 'realio-shared' : options.verse ? 'verse-shared' : options.flaky ? 'flaky-shared' : options.firstPaint ? 'firstpaint-shared' : options.firstPaintGate ? 'firstpaint-gate' : options.runner ? 'runner-shared' : options.buildHelper ? 'build-helper-shared' : options.build ? 'build-shared' : options.smoke ? 'companion-smoke' : options.web ? 'web-shared' : 'shared';
+      const name = options.unknown && !isMaster ? 'unknown' : isMaster && options.masterFixture !== undefined ? options.masterFixture : isMaster && options.pass ? (options.filePass ? 'pass-file' : options.web ? 'web-pass' : 'pass') : options.suite ? 'suite-shared' : options.tsc ? 'tsc-shared' : options.tap ? 'tap-shared' : options.docs ? 'docs-shared' : options.generated ? 'generated-shared' : options.digest ? 'digest-shared' : options.version ? 'version-shared' : options.perf ? 'perf-shared' : options.audit ? 'audit-shared' : options.auditOsv ? 'audit-osv' : options.pack ? 'pack-shared' : options.trust ? 'trust-shared' : options.trustGate ? 'trust-gate-shared' : options.fastSelect ? 'script-fast-select' : options.install ? 'install-shared' : options.installSmoke ? 'install-smoke-shared' : options.script ? 'script-shared' : options.membench ? 'membench-shared' : options.lint ? 'lint-shared' : options.lintTestFile ? 'lint-test-file' : options.realio ? 'realio-shared' : options.verse ? 'verse-shared' : options.flaky ? 'flaky-shared' : options.firstPaint ? 'firstpaint-shared' : options.firstPaintGate ? 'firstpaint-gate' : options.runner ? 'runner-shared' : options.buildHelper ? 'build-helper-shared' : options.build ? 'build-shared' : options.smoke ? 'companion-smoke' : options.recover ? 'unrelated-recover' : options.preflight ? 'preflight-reds' : options.web ? 'web-shared' : 'shared';
       const sha = isMaster ? master : prHead;
       let prefix: string;
       if (options.checkoutRef !== undefined) {
@@ -2505,6 +2505,179 @@ describe('CI baseline evidence', () => {
     const empty = await analyzeCiBaseline('owner/repo', github({ count: 0, smoke: true }).gh);
     expect(empty.groups.map(g => g.testId)).toEqual(smoke.map(g => g.testId));
     expect(empty.groups.every(g => g.prs.length === 0 && g.action === 'queue-master-fix')).toBe(true);
+  });
+  it('parses unrelated-PR recovery verdicts as gate failures', () => {
+    // The scheduled recover workflow runs its script under
+    // `set -euo pipefail`, so the ci-script-gate parser never sees it;
+    // the script's own verdict lines are the evidence. A fatal mutation
+    // result groups per HTTP status; skip/rerun/note/done lines are
+    // progress and never parse.
+    const failures = parseBaselineFailures(fixture('unrelated-recover'), 'owner/repo');
+    expect(failures.map(f => f.testId)).toEqual([
+      '.github/scripts/ci-unrelated-recover.mjs > (unrelated-recover) mutation-403',
+    ]);
+    expect(failures[0]).toMatchObject({ file: '.github/scripts/ci-unrelated-recover.mjs', names: '(unrelated-recover) mutation-403' });
+    expect(failures[0]?.excerpt).toContain('status=403');
+    // Abort and refuse verdicts group per reason slug -- each failure
+    // class is a different repair.
+    for (const [line, names] of [
+      ['recover abort reason=master-checks-unreadable', '(unrelated-recover) master-checks-unreadable'],
+      ['recover abort reason=no-recoverable-required-check', '(unrelated-recover) no-recoverable-required-check'],
+      ['recover abort reason=state-unwritable', '(unrelated-recover) state-unwritable'],
+      ['recover refuse reason=not-actions', '(unrelated-recover) not-actions'],
+      ['recover result rerun pr=7 ok=false status=0', '(unrelated-recover) mutation-0'],
+      ['recover result rerun pr=7 ok=false status=401', '(unrelated-recover) mutation-401'],
+      ['recover result rerun pr=7 ok=false status=500', '(unrelated-recover) mutation-500'],
+      ['recover result rerun pr=7 ok=false status=503', '(unrelated-recover) mutation-503'],
+    ] as const) {
+      const parsed = parseBaselineFailures(`${line}\n##[error]Process completed with exit code 1.`, 'owner/repo');
+      expect(parsed.map(f => f.testId), line).toEqual([`.github/scripts/ci-unrelated-recover.mjs > ${names}`]);
+    }
+    // Timestamped job-log lines parse identically.
+    const stamped = fixture('unrelated-recover').split('\n').map(l => `2026-01-01T00:00:00.0000000Z ${l}`).join('\n');
+    expect(parseBaselineFailures(stamped, 'owner/repo').map(f => f.testId)).toEqual(failures.map(f => f.testId));
+  });
+  it('keeps unrecognized recovery output unparsed', () => {
+    // Non-fatal mutation results (the script itself treats only 0, 401,
+    // 403 and 5xx as fatal), progress lines and malformed verdicts stay
+    // unparsed: the run exits 0 on them, so they are never evidence.
+    for (const log of [
+      'recover result rerun pr=7 ok=false status=404\nrecover done actions=0',
+      'recover result rerun pr=7 ok=false status=422\nrecover done actions=1',
+      'recover result rerun pr=7 ok=false status=499\nrecover done actions=0',
+      'recover result rerun pr=7 ok=true status=200\nrecover done actions=1',
+      'recover skip pr=7 reason=jobs-unknown check=Merge Gate\nrecover done actions=0',
+      'recover rerun pr=7 sha=abc1234 run=1 attempt=1 check=Merge Gate\nrecover done actions=1',
+      'recover note scan-capped kept=30\nrecover done actions=0',
+      'recover abort\nrecover done actions=0',
+      'recover abort reason=Has-Caps\n##[error]Process completed with exit code 1.',
+      'recover result rerun pr=seven ok=false status=403',
+    ]) {
+      expect(parseBaselineFailures(log, 'owner/repo'), log.slice(0, 60)).toEqual([]);
+    }
+  });
+  it('groups unrelated-recover failures and attributes their closed input set', async () => {
+    const report = await analyzeCiBaseline('owner/repo', github({ recover: true }).gh);
+    expect(report.freshness.map(p => p.state)).toEqual(['fresh', 'fresh']);
+    expect(report.groups.map(g => g.testId)).toEqual([
+      '.github/scripts/ci-unrelated-recover.mjs > (unrelated-recover) mutation-403',
+    ]);
+    const group = report.groups[0]!;
+    expect(group).toMatchObject({ classification: 'shared-baseline', action: 'queue-master-fix', master: 'fail', prs: [1, 2] });
+    expect(group.brief).toContain(group.testId);
+    // The script and the workflow step that sparse-checks it out, wires
+    // the token/state env and runs it are pr-caused; everything else
+    // stays unattributed baseline evidence.
+    for (const [touched, id] of [
+      ['.github/scripts/ci-unrelated-recover.mjs', '.github/scripts/ci-unrelated-recover.mjs > (unrelated-recover) mutation-403'],
+      ['.github/workflows/unrelated-pr-recover.yml', '.github/scripts/ci-unrelated-recover.mjs > (unrelated-recover) mutation-403'],
+    ] as const) {
+      const caused = await analyzeCiBaseline('owner/repo', github({ recover: true, touched }).gh);
+      const byId = new Map(caused.groups.map(g => [g.testId, g.action]));
+      expect(byId.get(id), touched).toBe('pr-caused');
+    }
+    for (const touched of ['docs/README.md', 'src/core/status.ts', '.github/tests/ci-unrelated-recover.test.mjs']) {
+      const shared = await analyzeCiBaseline('owner/repo', github({ recover: true, touched }).gh);
+      expect(shared.groups.every(g => g.action === 'queue-master-fix'), touched).toBe(true);
+    }
+    // Parenthesized recover identities can never resolve through a
+    // vitest pass line: a singleton unaffected failure stays unknown.
+    const singleton = await analyzeCiBaseline('owner/repo', github({ recover: true, count: 1, pass: true, filePass: true }).gh);
+    for (const g of singleton.groups.filter(g => g.file === '.github/scripts/ci-unrelated-recover.mjs')) {
+      expect(g).toMatchObject({ classification: 'unknown', action: 'unknown' });
+    }
+  });
+  it('parses preflight predicted-red module verdicts', () => {
+    // The scheduled preflight runs vitest with the JSON reporter, so no
+    // FAIL lines reach the log; the progress reporter's `end failed`
+    // module verdicts are the only per-file evidence, and they count
+    // only inside a log carrying the run step's own `preflight run:`
+    // closing verdict.
+    const failures = parseBaselineFailures(fixture('preflight-reds'), 'owner/repo');
+    expect(failures.map(f => f.testId)).toEqual([
+      'test/authority-codeowners-310b.test.ts > (preflight)',
+      'test/queue-gen.test.ts > (preflight)',
+    ]);
+    expect(failures[0]).toMatchObject({ file: 'test/authority-codeowners-310b.test.ts', names: '(preflight)' });
+    expect(failures[0]?.excerpt).toContain('end failed test/authority-codeowners-310b.test.ts');
+    // Timestamped job-log lines parse identically.
+    const stamped = fixture('preflight-reds').split('\n').map(l => `2026-01-01T00:00:00.0000000Z ${l}`).join('\n');
+    expect(parseBaselineFailures(stamped, 'owner/repo').map(f => f.testId)).toEqual(failures.map(f => f.testId));
+  });
+  it('keeps preflight progress lines unparsed without the run verdict', () => {
+    // The same `[test-ci-progress] end failed` lines appear in every
+    // test-ci.mjs run across ci.yml; without the preflight run step's
+    // own closing verdict they are not preflight evidence. Truncated
+    // runs, killed steps, plan/skipped outcomes and non-suite module
+    // ids stay unparsed too.
+    for (const log of [
+      '[test-ci-progress] end failed test/example.test.ts',
+      'preflight plan: fallback (no prior green full run), union 4, run 3, not_run 1\n[test-ci-progress] end failed test/example.test.ts',
+      'preflight skipped: release-not-owed\n[test-ci-progress] end failed test/example.test.ts',
+      'preflight run: red 0, unparsed true',
+      'preflight run: red 2\n[test-ci-progress] end failed test/example.test.ts',
+      'preflight run: red 2, unparsed false\n[test-ci-progress] end failed src/core/status.ts',
+      'preflight run: red 2, unparsed false\n[test-ci-progress] end failed ../escape.test.ts',
+      'preflight run: red 2, unparsed false\n[test-ci-progress] case-completed state=failed example.test.ts completed=3',
+      'preflight run: red 2, unparsed false\n[test-ci-progress] end passed test/example.test.ts\n[test-ci-progress] end skipped test/other.test.ts',
+    ]) {
+      expect(parseBaselineFailures(log, 'owner/repo'), log.slice(0, 60)).toEqual([]);
+    }
+    // A green prediction emits the verdict but no failed modules.
+    expect(parseBaselineFailures('preflight run: red 0, unparsed false\n[test-ci-progress] end passed test/example.test.ts', 'owner/repo')).toEqual([]);
+  });
+  it('emits preflight predicted reds as master-observed groups', async () => {
+    // The preflight workflow runs only on master (schedule and
+    // master-pinned dispatch), so its reds are master evidence no open
+    // PR reproduced: they group with empty prs/runs and queue a master
+    // fix directly.
+    const report = await analyzeCiBaseline('owner/repo', github({ masterFixture: 'preflight-reds' }).gh);
+    expect(report.master.known).toBe(true);
+    expect(report.freshness.map(p => p.state)).toEqual(['fresh', 'fresh']);
+    const preflight = report.groups.filter(g => g.names === '(preflight)');
+    expect(preflight.map(g => g.testId)).toEqual([
+      'test/authority-codeowners-310b.test.ts > (preflight)',
+      'test/queue-gen.test.ts > (preflight)',
+    ]);
+    for (const group of preflight) {
+      expect(group).toMatchObject({ classification: 'shared-baseline', action: 'queue-master-fix', master: 'fail', prs: [], runs: [], unaffectedPrs: [] });
+      expect(group.brief).toContain('master run no open pull request reproduced');
+      expect(group.brief).toContain(group.testId);
+    }
+    // The PR-observed vitest failure keeps its richer evidence group.
+    expect(report.groups.find(g => g.file === 'test/example.test.ts')).toMatchObject({ prs: [1, 2] });
+    const dir = mkdtempSync(join(tmpdir(), 'ci-baseline-')); dirs.push(dir);
+    const queued = enqueueBaselineFixes(report, join(dir, 'router-queue.md'));
+    for (const group of preflight) expect(queued).toContain(group.jobId);
+  });
+  it('attributes the weekly release-metrics script step to its gate', () => {
+    // release-flow-metrics.yml runs `node .github/scripts/
+    // ci-release-metrics.mjs --write ...` as a pure single-command step
+    // on its weekly schedule; an infrastructure exit groups under the
+    // script like the other whitelisted ci gates.
+    const log = [
+      '##[group]Run node .github/scripts/ci-release-metrics.mjs --write .github/metrics/release-flow.json',
+      'node .github/scripts/ci-release-metrics.mjs --write .github/metrics/release-flow.json',
+      'shell: /usr/bin/bash -e {0}',
+      '##[endgroup]',
+      'Error: release window unreadable',
+      '##[error]Process completed with exit code 1.',
+    ].join('\n');
+    const failures = parseBaselineFailures(log, 'owner/repo');
+    expect(failures.map(f => f.testId)).toEqual(['.github/scripts/ci-release-metrics.mjs > (release-metrics)']);
+    expect(failures[0]).toMatchObject({ file: '.github/scripts/ci-release-metrics.mjs', names: '(release-metrics)' });
+    // A companion test failure inside the same step still suppresses the
+    // gate group.
+    const suppressed = [
+      '##[group]Run node --test .github/tests/ci-release-metrics.test.mjs',
+      'node --test .github/tests/ci-release-metrics.test.mjs',
+      'shell: /usr/bin/bash -e {0}',
+      '##[endgroup]',
+      'TAP version 13',
+      'not ok 1 - window math',
+      '##[error]Process completed with exit code 1.',
+    ].join('\n');
+    expect(parseBaselineFailures(suppressed, 'owner/repo')).toEqual([]);
   });
   it('keeps TAP indentation on timestamped job-log lines', () => {
     const block = [
