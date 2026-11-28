@@ -142,7 +142,9 @@ A text `pull` (no `--json`) prints the same claim for a person: the job's
 owner, requirements, pack and secret names, the embedded task text when the
 job carries one, the lease token pair and expiry, and paste-ready `renew`,
 `complete` and `release` commands — the last names `--decline` for a job this
-node can never run.
+node can never run. A job with neither task text nor a pack is the bare
+enqueue's connectivity ping: the pull says there is no work to run, and
+completing it with any result text is the whole exercise.
 
 `phm node plan` prints one `job -> node` line per routable job, or `nobody`
 with the fix when no live node can take it. An empty route set is not the
